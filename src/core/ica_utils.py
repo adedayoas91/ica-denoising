@@ -192,6 +192,40 @@ def reconstruct_bss(ic_comps, A, mean, reject=None, keep=None):
     return np.dot(comps, np.asarray(A).T) + mean
 
 
+def accepted_to_rejected(accepted_components, n_total_components):
+    """Convert accepted component indices to rejected component indices.
+
+    Parameters
+    ----------
+    accepted_components : iterable[int] | None
+        Component indices to keep. ``None`` means keep all components.
+    n_total_components : int
+        Total number of available components.
+    """
+    if accepted_components is None:
+        return []
+    n_total_components = int(n_total_components)
+    accepted = sorted({int(component) for component in accepted_components})
+    invalid = [component for component in accepted if component < 0 or component >= n_total_components]
+    if invalid:
+        raise ValueError(f"Accepted component indices out of range: {invalid}")
+    return [component for component in range(n_total_components) if component not in accepted]
+
+
+def reject_components_from_cluster_selection(predictions, *, reject_clusters=(), keep_clusters=()):
+    """Convert cluster label selections into component indices to reject."""
+    predictions = np.asarray(predictions)
+    reject_clusters = list(reject_clusters)
+    keep_clusters = list(keep_clusters)
+    if reject_clusters and keep_clusters:
+        raise ValueError("Use reject_clusters or keep_clusters for a method, not both.")
+    if keep_clusters:
+        keep_mask = np.isin(predictions, keep_clusters)
+        return np.flatnonzero(~keep_mask)
+    reject_mask = np.isin(predictions, reject_clusters)
+    return np.flatnonzero(reject_mask)
+
+
 def _prepare_whitened_data(data, n_comps):
     X = np.asarray(data, dtype=float).T
     n_comps = int(n_comps)
@@ -312,32 +346,76 @@ def _sym_decorrelate(W):
     return (eigvecs @ np.diag(1.0 / np.sqrt(eigvals)) @ eigvecs.T) @ W
 
 
-# clusterigs
-def cluster(ICs,n_clus,f_s):
+def cluster(
+    ICs,
+    n_clusters,
+    sample_rate_hz,
+    *,
+    feature_start_bin=30,
+    nperseg=250,
+    noverlap=125,
+    random_state=0,
+):
+    """Cluster ICs by truncated Welch spectra and project them to 3D for plotting.
+
+    Parameters
+    ----------
+    ICs : array, shape (frames, components)
+        Time-domain independent components returned by the BSS decomposition.
+    n_clusters : int
+        Number of KMeans clusters to request. Values above the component count are clipped.
+    sample_rate_hz : float
+        Recording sample rate used for Welch spectra.
+    feature_start_bin : int
+        Lower spectral bin removed before KMeans/PCA, matching the reference notebook's ``[:, 30:]``.
     """
-    ICs (array ): The matrix of all ICs; shape [n_features, n_ICs].
-    l (int): the length to which mat is truncated to cluster on
-    n_clus (int): number of cluster (2 or 3)
-    """
+    ICs = np.asarray(ICs, dtype=float)
+    if ICs.ndim != 2:
+        raise ValueError(f"ICs must have shape (frames, components), got {ICs.shape}.")
 
-    # Kmeans on truncated spectra
-    IC_welch = np.zeros((ICs.shape[1],126))
-    for i in range(ICs.shape[1]):
-        _, IC_welch[i,:] = welch(ICs[:,i],f_s,return_onesided=True,nperseg=250,noverlap=125)
-    kmeans = KMeans(n_clusters=n_clus)
-    predictions = kmeans.fit_predict(IC_welch[:,30:])  # can remove the [:,30:]
-    pca = PCA(n_components=3)
-    new_mat = pca.fit_transform(IC_welch[:,30:])    # can remove the [:,30:]
-    c = kmeans.cluster_centers_
-    centers = pca.transform(c)
-    return new_mat, predictions #, centers
+    n_frames, n_ics = ICs.shape
+    if n_ics < 1:
+        raise ValueError("ICs must contain at least one component.")
+
+    nperseg = min(int(nperseg), n_frames)
+    noverlap = min(int(noverlap), max(nperseg - 1, 0))
+    spectra = []
+    for ic_idx in range(n_ics):
+        _, power = welch(
+            ICs[:, ic_idx],
+            fs=sample_rate_hz,
+            return_onesided=True,
+            nperseg=nperseg,
+            noverlap=noverlap,
+        )
+        spectra.append(power)
+    spectra = np.asarray(spectra)
+
+    start_bin = min(max(int(feature_start_bin), 0), max(spectra.shape[1] - 1, 0))
+    features = np.log1p(spectra[:, start_bin:])
+    if features.shape[1] < 3:
+        features = np.log1p(spectra)
+
+    n_clusters = min(int(n_clusters), n_ics)
+    if n_clusters < 1:
+        raise ValueError("n_clusters must be at least 1.")
+
+    kmeans = KMeans(n_clusters=n_clusters, random_state=random_state, n_init=10)
+    predictions = kmeans.fit_predict(features)
+
+    n_pca_components = min(3, features.shape[0], features.shape[1])
+    new_mat = PCA(n_components=n_pca_components).fit_transform(features)
+    if n_pca_components < 3:
+        new_mat = np.pad(new_mat, ((0, 0), (0, 3 - n_pca_components)), constant_values=0.0)
+
+    return new_mat, predictions, spectra, features
 
 
-# proceed function without returning the individuals results      
+# proceed function without returning the individuals results
 def compute(traces,n_clus,f_s):
     a = eig_dec(traces)
     ic_comps, IC_ft,A,mean = ica_dec(traces,a,t=0.0001,max_=500)
-    new_mat, predictions= cluster(IC_ft,n_clus,f_s)
+    new_mat, predictions, _, _ = cluster(ic_comps,n_clus,f_s)
     al = np.c_[new_mat.round(1),predictions.round(1)]
     plot_clusters(new_mat,predictions)
     plottings_spectrals(n_clus,al)
