@@ -113,7 +113,7 @@ def sobi_dec(
     max_iter=500,
 ):
     """Second-order blind identification for extracted trace matrices."""
-    X, mean, X_white = _prepare_whitened_data(data, n_comps)
+    X, mean, X_white, _whitening = _prepare_whitened_data(data, n_comps)
     covs = _lagged_covariances(X_white, lags=lags)
     rotation = _joint_diag_symmetric(covs, tol=tol, max_iter=max_iter)
     ic_comps = X_white @ rotation
@@ -132,7 +132,7 @@ def jade_dec(
     Full JADE builds O(k^2) cumulant matrices for k components. The
     ``max_cumulant_matrices`` cap keeps this usable for exploratory notebooks.
     """
-    X, mean, X_white = _prepare_whitened_data(data, n_comps)
+    X, mean, X_white, _whitening = _prepare_whitened_data(data, n_comps)
     cumulants = _jade_cumulant_matrices(
         X_white,
         max_cumulant_matrices=max_cumulant_matrices,
@@ -150,8 +150,13 @@ def infomax_dec(
     learning_rate=0.01,
     random_state=0,
 ):
-    """Infomax-style natural-gradient ICA on PCA-whitened traces."""
-    X, mean, X_white = _prepare_whitened_data(data, n_comps)
+    """Infomax-style natural-gradient ICA on PCA-whitened traces.
+
+    The learned ``W`` below is an unmixing operator in PCA-whitened space.
+    The public BSS API returns a neuron-space mixing matrix instead, so
+    ``reconstruct_bss(ic_comps, A, mean)`` keeps the same contract as FastICA.
+    """
+    X, mean, X_white, whitening = _prepare_whitened_data(data, n_comps)
     rng = np.random.default_rng(random_state)
     W = np.eye(n_comps) + 0.01 * rng.standard_normal((n_comps, n_comps))
     W = _sym_decorrelate(W)
@@ -171,7 +176,8 @@ def infomax_dec(
         previous = W.copy()
 
     ic_comps = (W @ Xw).T
-    return _format_bss_output(X, mean, ic_comps, data.shape[1])
+    mixing = _mixing_from_unmixing(W @ whitening)
+    return _format_bss_output(X, mean, ic_comps, data.shape[1], mixing=mixing)
 
 
 def reconstruct_bss(ic_comps, A, mean, reject=None, keep=None):
@@ -235,15 +241,30 @@ def _prepare_whitened_data(data, n_comps):
     X_centered = X - mean
     pca = PCA(n_components=n_comps, whiten=True, svd_solver="full")
     X_white = pca.fit_transform(X_centered)
-    return X_centered, mean, X_white
+    whitening = pca.components_ / np.sqrt(pca.explained_variance_)[:, np.newaxis]
+    return X_centered, mean, X_white, whitening
 
 
-def _format_bss_output(X_centered, mean, ic_comps, n_frames):
-    A = _least_squares_mixing(ic_comps, X_centered)
+def _format_bss_output(X_centered, mean, ic_comps, n_frames, mixing=None):
+    """Convert source activations into the shared notebook output contract.
+
+    Custom methods are fit in whitened component space. If the caller does not
+    provide a neuron-space mixing matrix, recover that projection explicitly
+    from the fitted sources.
+    """
+    if mixing is None:
+        A = _least_squares_mixing(ic_comps, X_centered)
+    else:
+        A = np.asarray(mixing, dtype=float)
     IC_ft = np.zeros((ic_comps.shape[1], n_frames))
     for i in range(ic_comps.shape[1]):
         IC_ft[i, :] = np.abs(np.fft.fft(ic_comps[:, i], n=n_frames))
     return ic_comps, IC_ft, A, mean
+
+
+def _mixing_from_unmixing(unmixing):
+    """Return the neuron-space mixing matrix for a linear unmixing operator."""
+    return np.linalg.pinv(np.asarray(unmixing, dtype=float))
 
 
 def _least_squares_mixing(ic_comps, X_centered):
@@ -411,12 +432,154 @@ def cluster(
     return new_mat, predictions, spectra, features
 
 
+def plot_mean_log_psd_by_cluster(
+    spectra,
+    predictions,
+    sample_rate_hz,
+    *,
+    xlim=(0.0, 0.75),
+    per_cluster_ylim=(-5.0, 2.0),
+    overlay_ylim=(-3.0, 3.0),
+    show_individual=True,
+    title_prefix="LogPower clus",
+):
+    """Plot mean log-PSD per cluster plus one overlay panel.
+
+    Parameters
+    ----------
+    spectra : array, shape (n_components, n_freq_bins)
+        Non-negative PSD values (for example from ``cluster(...)[2]``).
+    predictions : array, shape (n_components,)
+        Cluster labels for each component.
+    sample_rate_hz : float
+        Sampling rate used to estimate ``spectra``.
+    """
+    spectra = np.asarray(spectra, dtype=float)
+    predictions = np.asarray(predictions)
+    if spectra.ndim != 2:
+        raise ValueError(f"spectra must have shape (n_components, n_freq_bins), got {spectra.shape}.")
+    if predictions.ndim != 1 or predictions.shape[0] != spectra.shape[0]:
+        raise ValueError(
+            "predictions must be 1D with one label per component: "
+            f"got {predictions.shape} for {spectra.shape[0]} components."
+        )
+
+    unique_labels = np.unique(predictions)
+    n_clusters = int(unique_labels.size)
+    eps = np.finfo(float).eps
+    freqs = np.linspace(0.0, float(sample_rate_hz) / 2.0, spectra.shape[1])
+
+    fig, ax = plt.subplots(1, n_clusters + 1, figsize=(4.5 * (n_clusters + 1), 3.2), squeeze=False)
+    axes = ax[0]
+    for panel_idx, cluster_label in enumerate(unique_labels):
+        group = spectra[predictions == cluster_label]
+        if show_individual:
+            for row in group:
+                axes[panel_idx].plot(freqs, np.log(np.maximum(row, eps)), lw=0.8, alpha=0.45)
+        mean_log = np.log(np.maximum(group.mean(axis=0), eps))
+        axes[panel_idx].plot(freqs, mean_log, color="black", lw=1.5, label="mean log")
+        axes[panel_idx].set_xlim(list(xlim))
+        axes[panel_idx].set_ylim(list(per_cluster_ylim))
+        axes[panel_idx].set_title(f"{title_prefix} {int(cluster_label)}, {group.shape[0]}")
+        axes[panel_idx].set_xlabel("Frequency (Hz)")
+        axes[panel_idx].set_ylabel("Log PSD")
+        axes[panel_idx].legend(loc="best")
+
+        axes[n_clusters].plot(freqs, mean_log, lw=1.2, label=f"clus {int(cluster_label)}")
+
+    axes[n_clusters].set_xlim(list(xlim))
+    axes[n_clusters].set_ylim(list(overlay_ylim))
+    axes[n_clusters].set_title("Mean Log PSD by Cluster")
+    axes[n_clusters].set_xlabel("Frequency (Hz)")
+    axes[n_clusters].set_ylabel("Log PSD")
+    axes[n_clusters].legend(loc="best")
+    fig.tight_layout()
+    return fig, axes
+
+
+def rank_clusters_by_mean_log_psd(
+    spectra,
+    predictions,
+    sample_rate_hz,
+    *,
+    fmin=0.0,
+    fmax=0.75,
+    aggregate="mean",
+):
+    """Rank clusters by mean log-PSD score in a target frequency band.
+
+    Parameters
+    ----------
+    spectra : array, shape (n_components, n_freq_bins)
+        Non-negative PSD values per component.
+    predictions : array, shape (n_components,)
+        Cluster labels per component.
+    sample_rate_hz : float
+        Sampling rate used to estimate ``spectra``.
+    fmin, fmax : float
+        Frequency band (Hz) used for ranking.
+    aggregate : {"mean", "sum", "peak"}
+        How to collapse log-PSD values within the selected frequency band.
+
+    Returns
+    -------
+    ranked : list[dict]
+        Highest-score-first entries with keys:
+        ``cluster``, ``score``, ``n_components``, ``rank``.
+    """
+    spectra = np.asarray(spectra, dtype=float)
+    predictions = np.asarray(predictions)
+    if spectra.ndim != 2:
+        raise ValueError(f"spectra must have shape (n_components, n_freq_bins), got {spectra.shape}.")
+    if predictions.ndim != 1 or predictions.shape[0] != spectra.shape[0]:
+        raise ValueError(
+            "predictions must be 1D with one label per component: "
+            f"got {predictions.shape} for {spectra.shape[0]} components."
+        )
+    if aggregate not in {"mean", "sum", "peak"}:
+        raise ValueError("aggregate must be one of: 'mean', 'sum', 'peak'.")
+
+    fs = float(sample_rate_hz)
+    freqs = np.linspace(0.0, fs / 2.0, spectra.shape[1])
+    lo = max(0.0, min(float(fmin), fs / 2.0))
+    hi = max(lo, min(float(fmax), fs / 2.0))
+    band_mask = (freqs >= lo) & (freqs <= hi)
+    if not np.any(band_mask):
+        raise ValueError(f"No frequency bins fall inside [{lo}, {hi}] Hz.")
+
+    eps = np.finfo(float).eps
+    ranked = []
+    for label in np.unique(predictions):
+        group = spectra[predictions == label]
+        mean_log = np.log(np.maximum(group.mean(axis=0), eps))
+        band_values = mean_log[band_mask]
+        if aggregate == "mean":
+            score = float(band_values.mean())
+        elif aggregate == "sum":
+            score = float(band_values.sum())
+        else:
+            score = float(band_values.max())
+        ranked.append(
+            {
+                "cluster": int(label),
+                "score": score,
+                "n_components": int(group.shape[0]),
+            }
+        )
+
+    ranked.sort(key=lambda row: row["score"], reverse=True)
+    for rank, row in enumerate(ranked, start=1):
+        row["rank"] = rank
+    return ranked
+
+
 # proceed function without returning the individuals results
 def compute(traces,n_clus,f_s):
     a = eig_dec(traces)
     ic_comps, IC_ft,A,mean = ica_dec(traces,a,t=0.0001,max_=500)
-    new_mat, predictions, _, _ = cluster(ic_comps,n_clus,f_s)
+    new_mat, predictions, spectra, _ = cluster(ic_comps,n_clus,f_s)
     al = np.c_[new_mat.round(1),predictions.round(1)]
     plot_clusters(new_mat,predictions)
-    plottings_spectrals(n_clus,al)
-    plottings_logSpectral(n_clus,al) 
+    plottings_spectrals(IC_ft, n_clus, al, f_s)
+    # Keep existing mean-log spectral behavior, but from PSDs used for clustering.
+    plot_mean_log_psd_by_cluster(spectra, predictions, f_s)
