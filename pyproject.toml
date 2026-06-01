@@ -12,6 +12,7 @@ dependencies = [
     "pytest>=9.0.3",
     "scikit-learn",
     "scipy",
+    "seaborn>=0.13.2",
 ]
 
 [tool.pytest.ini_options]
