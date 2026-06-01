@@ -160,10 +160,6 @@ venv.bak/
 
 # data and big files
 data/
-*.h5
-*.npy
-*.mat
-*.csv
 
 # Spyder project settings
 .spyderproject
@@ -228,4 +224,3 @@ __marimo__/
 # dir
 others/
 scripts/
-outputs/
