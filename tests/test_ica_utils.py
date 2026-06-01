@@ -16,6 +16,7 @@ from ica_utils import (
     rank_clusters_by_mean_log_psd,
     reconstruct_bss,
     reject_components_from_cluster_selection,
+    sobi_dec,
 )
 
 
@@ -148,6 +149,12 @@ class ICAUtilsTests(unittest.TestCase):
         centered = traces.T - mean
         effective_unmixing = np.linalg.lstsq(centered, ic_comps, rcond=None)[0].T
         np.testing.assert_allclose(effective_unmixing @ mixing, np.eye(3), atol=1e-10)
+
+    def test_sobi_default_lags_are_short_range(self) -> None:
+        default_lags = sobi_dec.__defaults__[0]
+
+        self.assertEqual(default_lags, (1, 2, 3, 5))
+        self.assertLessEqual(max(default_lags), 5)
 
 
 if __name__ == "__main__":

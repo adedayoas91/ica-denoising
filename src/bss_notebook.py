@@ -257,7 +257,17 @@ def output_directory(
 ) -> Path:
     method = _validate_method(method)
     project_root = resolve_project_root() if project_root is None else Path(project_root)
-    parts = [project_root / "outputs" / sanitize_name(analysis_kind)]
+    analysis_parts = [
+        segment.strip()
+        for segment in str(analysis_kind).replace("\\", "/").split("/")
+        if segment.strip()
+    ]
+    if not analysis_parts:
+        analysis_parts = ["linear"]
+    if any(segment in {".", ".."} for segment in analysis_parts):
+        raise ValueError("analysis_kind cannot contain '.' or '..' path segments.")
+    parts = [project_root / "outputs"]
+    parts.extend(sanitize_name(segment) for segment in analysis_parts)
     if dataset_group:
         parts.append(sanitize_name(dataset_group))
     parts.extend([sanitize_name(data_name), method])
@@ -265,6 +275,77 @@ def output_directory(
     for part in parts[1:]:
         output_dir = output_dir / part
     return output_dir
+
+
+def bss_output_paths(spec: DatasetSpec, method: str, output_dir: Path) -> dict[str, Path]:
+    method = _validate_method(method)
+    stem = f"{sanitize_name(method)}_{sanitize_name(spec.data_name)}"
+    output_dir = Path(output_dir)
+    return {
+        "cleaned": output_dir / f"cleaned_{stem}.npy",
+        "components": output_dir / f"components_{stem}.npy",
+        "spectra": output_dir / f"spectra_{stem}.npy",
+        "mixing": output_dir / f"mixing_{stem}.npy",
+        "mean": output_dir / f"mean_{stem}.npy",
+        "metadata": output_dir / f"metadata_{stem}.json",
+    }
+
+
+def load_bss_outputs(
+    dataset_key: str,
+    method: str,
+    project_root: Path | None = None,
+    analysis_kind: str = "linear",
+    output_dir: Path | None = None,
+) -> BSSRunResult:
+    """Load saved BSS artifacts produced by ``save_bss_outputs``."""
+    project_root = add_project_imports(project_root)
+    method = _validate_method(method)
+    spec, traces = load_traces(dataset_key, project_root)
+    output_dir = (
+        output_directory(
+            method,
+            spec.data_name,
+            project_root,
+            analysis_kind=analysis_kind,
+            dataset_group=spec.group,
+        )
+        if output_dir is None
+        else Path(output_dir)
+    )
+    paths = bss_output_paths(spec, method, output_dir)
+    missing = [label for label, path in paths.items() if not path.exists()]
+    if missing:
+        expected = "\n".join(f"  {label}: {path}" for label, path in paths.items())
+        raise FileNotFoundError(
+            f"Missing saved BSS outputs for {method!r} in {output_dir}: {missing}.\n"
+            "Run notebooks/v2a-RSNs/linear_methods.ipynb with SAVE_OUTPUTS = True first.\n"
+            f"Expected files:\n{expected}"
+        )
+
+    cleaned_saved = np.asarray(np.load(paths["cleaned"], allow_pickle=False), dtype=float)
+    if cleaned_saved.shape == traces.shape:
+        cleaned = cleaned_saved.T
+    elif cleaned_saved.shape == traces.T.shape:
+        cleaned = cleaned_saved
+    else:
+        raise ValueError(
+            f"{paths['cleaned']} has shape {cleaned_saved.shape}; expected "
+            f"{traces.shape} or {traces.T.shape}."
+        )
+
+    return BSSRunResult(
+        dataset=spec,
+        method=method,
+        traces=traces,
+        ic_comps=np.asarray(np.load(paths["components"], allow_pickle=False), dtype=float),
+        IC_ft=np.asarray(np.load(paths["spectra"], allow_pickle=False), dtype=float),
+        A=np.asarray(np.load(paths["mixing"], allow_pickle=False), dtype=float),
+        mean=np.asarray(np.load(paths["mean"], allow_pickle=False), dtype=float),
+        cleaned=cleaned,
+        output_dir=output_dir,
+        saved_paths=paths,
+    )
 
 
 def run_bss_method(
@@ -361,15 +442,7 @@ def save_bss_outputs(
     random_state: int,
 ) -> dict[str, Path]:
     output_dir.mkdir(parents=True, exist_ok=True)
-    stem = f"{sanitize_name(method)}_{sanitize_name(spec.data_name)}"
-    paths = {
-        "cleaned": output_dir / f"cleaned_{stem}.npy",
-        "components": output_dir / f"components_{stem}.npy",
-        "spectra": output_dir / f"spectra_{stem}.npy",
-        "mixing": output_dir / f"mixing_{stem}.npy",
-        "mean": output_dir / f"mean_{stem}.npy",
-        "metadata": output_dir / f"metadata_{stem}.json",
-    }
+    paths = bss_output_paths(spec, method, output_dir)
     np.save(paths["cleaned"], cleaned.T)
     np.save(paths["components"], ic_comps)
     np.save(paths["spectra"], IC_ft)

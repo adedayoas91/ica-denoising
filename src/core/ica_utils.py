@@ -108,7 +108,7 @@ def bss_dec(
 def sobi_dec(
     data,
     n_comps,
-    lags=(1, 2, 3, 5, 10, 20),
+    lags=(1, 2, 3, 5),
     tol=0.0001,
     max_iter=500,
 ):
