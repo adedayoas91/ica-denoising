@@ -41,6 +41,19 @@ class BSSRunResult:
     saved_paths: dict[str, Path]
 
 
+@dataclass(frozen=True)
+class BSSDecompositionResult:
+    dataset: DatasetSpec
+    method: str
+    traces: np.ndarray
+    ic_comps: np.ndarray
+    IC_ft: np.ndarray
+    A: np.ndarray
+    mean: np.ndarray
+    output_dir: Path
+    saved_paths: dict[str, Path]
+
+
 def resolve_project_root(start: Path | None = None) -> Path:
     """Resolve the repository root from a notebook or script working directory."""
     start = Path.cwd() if start is None else Path(start)
@@ -277,12 +290,15 @@ def output_directory(
     return output_dir
 
 
-def bss_output_paths(spec: DatasetSpec, method: str, output_dir: Path) -> dict[str, Path]:
+def bss_decomposition_output_paths(
+    spec: DatasetSpec,
+    method: str,
+    output_dir: Path,
+) -> dict[str, Path]:
     method = _validate_method(method)
     stem = f"{sanitize_name(method)}_{sanitize_name(spec.data_name)}"
     output_dir = Path(output_dir)
     return {
-        "cleaned": output_dir / f"cleaned_{stem}.npy",
         "components": output_dir / f"components_{stem}.npy",
         "spectra": output_dir / f"spectra_{stem}.npy",
         "mixing": output_dir / f"mixing_{stem}.npy",
@@ -291,14 +307,50 @@ def bss_output_paths(spec: DatasetSpec, method: str, output_dir: Path) -> dict[s
     }
 
 
-def load_bss_outputs(
+def bss_output_paths(spec: DatasetSpec, method: str, output_dir: Path) -> dict[str, Path]:
+    method = _validate_method(method)
+    stem = f"{sanitize_name(method)}_{sanitize_name(spec.data_name)}"
+    output_dir = Path(output_dir)
+    return {
+        **cleaned_trace_output_paths(spec, method, output_dir),
+        **bss_decomposition_output_paths(spec, method, output_dir),
+    }
+
+
+def cleaned_trace_output_paths(
+    spec: DatasetSpec,
+    method: str,
+    output_dir: Path,
+) -> dict[str, Path]:
+    method = _validate_method(method)
+    stem = f"{sanitize_name(method)}_{sanitize_name(spec.data_name)}"
+    output_dir = Path(output_dir) / "cleaned"
+    return {
+        "cleaned": output_dir / f"cleaned_{stem}.npy",
+        "cleaned_metadata": output_dir / f"metadata_cleaned_{stem}.json",
+    }
+
+
+def cluster_selection_output_path(spec: DatasetSpec, method: str, output_dir: Path) -> Path:
+    method = _validate_method(method)
+    stem = f"{sanitize_name(method)}_{sanitize_name(spec.data_name)}"
+    return Path(output_dir) / "clusters" / f"cluster_selection_{stem}.json"
+
+
+def _legacy_cleaned_output_path(spec: DatasetSpec, method: str, output_dir: Path) -> Path:
+    method = _validate_method(method)
+    stem = f"{sanitize_name(method)}_{sanitize_name(spec.data_name)}"
+    return Path(output_dir) / f"cleaned_{stem}.npy"
+
+
+def load_bss_decomposition_outputs(
     dataset_key: str,
     method: str,
     project_root: Path | None = None,
     analysis_kind: str = "linear",
     output_dir: Path | None = None,
-) -> BSSRunResult:
-    """Load saved BSS artifacts produced by ``save_bss_outputs``."""
+) -> BSSDecompositionResult:
+    """Load saved BSS decomposition artifacts produced by the linear notebook."""
     project_root = add_project_imports(project_root)
     method = _validate_method(method)
     spec, traces = load_traces(dataset_key, project_root)
@@ -313,28 +365,17 @@ def load_bss_outputs(
         if output_dir is None
         else Path(output_dir)
     )
-    paths = bss_output_paths(spec, method, output_dir)
+    paths = bss_decomposition_output_paths(spec, method, output_dir)
     missing = [label for label, path in paths.items() if not path.exists()]
     if missing:
         expected = "\n".join(f"  {label}: {path}" for label, path in paths.items())
         raise FileNotFoundError(
-            f"Missing saved BSS outputs for {method!r} in {output_dir}: {missing}.\n"
-            "Run notebooks/v2a-RSNs/linear_methods.ipynb with SAVE_OUTPUTS = True first.\n"
+            f"Missing saved BSS decomposition outputs for {method!r} in {output_dir}: {missing}.\n"
+            "Run notebooks/v2a-RSNs/linear_methods.ipynb with SAVE_DECOMPOSITION_OUTPUTS = True first.\n"
             f"Expected files:\n{expected}"
         )
 
-    cleaned_saved = np.asarray(np.load(paths["cleaned"], allow_pickle=False), dtype=float)
-    if cleaned_saved.shape == traces.shape:
-        cleaned = cleaned_saved.T
-    elif cleaned_saved.shape == traces.T.shape:
-        cleaned = cleaned_saved
-    else:
-        raise ValueError(
-            f"{paths['cleaned']} has shape {cleaned_saved.shape}; expected "
-            f"{traces.shape} or {traces.T.shape}."
-        )
-
-    return BSSRunResult(
+    return BSSDecompositionResult(
         dataset=spec,
         method=method,
         traces=traces,
@@ -342,9 +383,121 @@ def load_bss_outputs(
         IC_ft=np.asarray(np.load(paths["spectra"], allow_pickle=False), dtype=float),
         A=np.asarray(np.load(paths["mixing"], allow_pickle=False), dtype=float),
         mean=np.asarray(np.load(paths["mean"], allow_pickle=False), dtype=float),
-        cleaned=cleaned,
         output_dir=output_dir,
         saved_paths=paths,
+    )
+
+
+def load_bss_outputs(
+    dataset_key: str,
+    method: str,
+    project_root: Path | None = None,
+    analysis_kind: str = "linear",
+    output_dir: Path | None = None,
+) -> BSSRunResult:
+    """Load saved BSS artifacts, including a cleaned trace when present."""
+    result = load_bss_decomposition_outputs(
+        dataset_key=dataset_key,
+        method=method,
+        project_root=project_root,
+        analysis_kind=analysis_kind,
+        output_dir=output_dir,
+    )
+    paths = bss_output_paths(result.dataset, method, result.output_dir)
+    saved_paths = dict(result.saved_paths)
+    cleaned_path = paths["cleaned"]
+    legacy_cleaned_path = _legacy_cleaned_output_path(result.dataset, method, result.output_dir)
+    if not cleaned_path.exists() and legacy_cleaned_path.exists():
+        cleaned_path = legacy_cleaned_path
+    if not cleaned_path.exists():
+        cleaned = np.dot(result.ic_comps, result.A.T) + result.mean
+    else:
+        cleaned_saved = np.asarray(np.load(cleaned_path, allow_pickle=False), dtype=float)
+        saved_paths["cleaned"] = cleaned_path
+        traces = result.traces
+        if cleaned_saved.shape == traces.shape:
+            cleaned = cleaned_saved.T
+        elif cleaned_saved.shape == traces.T.shape:
+            cleaned = cleaned_saved
+        else:
+            raise ValueError(
+                f"{cleaned_path} has shape {cleaned_saved.shape}; expected "
+                f"{traces.shape} or {traces.T.shape}."
+            )
+
+    return BSSRunResult(
+        dataset=result.dataset,
+        method=result.method,
+        traces=result.traces,
+        ic_comps=result.ic_comps,
+        IC_ft=result.IC_ft,
+        A=result.A,
+        mean=result.mean,
+        cleaned=cleaned,
+        output_dir=result.output_dir,
+        saved_paths=saved_paths,
+    )
+
+
+def run_bss_decomposition(
+    dataset_key: str,
+    method: str,
+    n_components: int | None = None,
+    save_outputs: bool = False,
+    project_root: Path | None = None,
+    tol: float = 0.0001,
+    max_iter: int = 500,
+    random_state: int = 0,
+    analysis_kind: str = "linear",
+) -> BSSDecompositionResult:
+    """Run one BSS method and optionally save IC decomposition artifacts only."""
+    project_root = add_project_imports(project_root)
+    from ica_utils import bss_dec
+
+    method = _validate_method(method)
+    spec, traces = load_traces(dataset_key, project_root)
+    n_components = choose_n_components(traces, n_components or spec.default_n_components)
+    ic_comps, IC_ft, A, mean = bss_dec(
+        traces,
+        n_comps=n_components,
+        t=tol,
+        max_=max_iter,
+        method=method,
+        random_state=random_state,
+    )
+    out_dir = output_directory(
+        method,
+        spec.data_name,
+        project_root,
+        analysis_kind=analysis_kind,
+        dataset_group=spec.group,
+    )
+    saved_paths: dict[str, Path] = {}
+    if save_outputs:
+        saved_paths = save_bss_decomposition_outputs(
+            spec=spec,
+            method=method,
+            traces=traces,
+            ic_comps=ic_comps,
+            IC_ft=IC_ft,
+            A=A,
+            mean=mean,
+            output_dir=out_dir,
+            n_components=n_components,
+            tol=tol,
+            max_iter=max_iter,
+            random_state=random_state,
+        )
+    return BSSDecompositionResult(
+        dataset=spec,
+        method=method,
+        traces=traces,
+        ic_comps=ic_comps,
+        IC_ft=IC_ft,
+        A=A,
+        mean=mean,
+        output_dir=out_dir,
+        saved_paths=saved_paths,
     )
 
 
@@ -425,6 +578,100 @@ def choose_n_components(traces: np.ndarray, requested: int | None) -> int:
     return min(requested, limit)
 
 
+def _dataset_metadata(spec: DatasetSpec) -> dict:
+    metadata = asdict(spec)
+    metadata["trace_path"] = str(spec.trace_path)
+    metadata["tail_angle_path"] = str(spec.tail_angle_path) if spec.tail_angle_path else None
+    return metadata
+
+
+def save_bss_decomposition_outputs(
+    spec: DatasetSpec,
+    method: str,
+    traces: np.ndarray,
+    ic_comps: np.ndarray,
+    IC_ft: np.ndarray,
+    A: np.ndarray,
+    mean: np.ndarray,
+    output_dir: Path,
+    n_components: int,
+    tol: float,
+    max_iter: int,
+    random_state: int,
+) -> dict[str, Path]:
+    output_dir.mkdir(parents=True, exist_ok=True)
+    paths = bss_decomposition_output_paths(spec, method, output_dir)
+    np.save(paths["components"], ic_comps)
+    np.save(paths["spectra"], IC_ft)
+    np.save(paths["mixing"], A)
+    np.save(paths["mean"], mean)
+
+    metadata = {
+        "saved_at": datetime.now(timezone.utc).isoformat(),
+        "artifact_kind": "bss_decomposition",
+        "method": method,
+        "dataset": _dataset_metadata(spec),
+        "input_shape_neurons_by_frames": list(traces.shape),
+        "component_shape_frames_by_components": list(ic_comps.shape),
+        "spectra_shape_components_by_bins": list(IC_ft.shape),
+        "mixing_shape_neurons_by_components": list(A.shape),
+        "mean_shape_neurons": list(mean.shape),
+        "n_components": int(n_components),
+        "tol": float(tol),
+        "max_iter": int(max_iter),
+        "random_state": int(random_state),
+    }
+    paths["metadata"].write_text(json.dumps(metadata, indent=2), encoding="utf-8")
+    return paths
+
+
+def save_cleaned_trace_output(
+    spec: DatasetSpec,
+    method: str,
+    traces: np.ndarray,
+    cleaned: np.ndarray,
+    output_dir: Path,
+    reject_components: Iterable[int] = (),
+    metadata: dict | None = None,
+) -> dict[str, Path]:
+    paths = cleaned_trace_output_paths(spec, method, output_dir)
+    paths["cleaned"].parent.mkdir(parents=True, exist_ok=True)
+    np.save(paths["cleaned"], cleaned.T)
+
+    payload = {
+        "saved_at": datetime.now(timezone.utc).isoformat(),
+        "artifact_kind": "cleaned_trace",
+        "method": method,
+        "dataset": _dataset_metadata(spec),
+        "input_shape_neurons_by_frames": list(traces.shape),
+        "cleaned_saved_shape_neurons_by_frames": list(cleaned.T.shape),
+        "reject_components": [int(component) for component in reject_components],
+    }
+    if metadata:
+        payload.update(metadata)
+    paths["cleaned_metadata"].write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    return paths
+
+
+def save_cluster_selection_output(
+    spec: DatasetSpec,
+    method: str,
+    output_dir: Path,
+    selection: dict,
+) -> Path:
+    path = cluster_selection_output_path(spec, method, output_dir)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "saved_at": datetime.now(timezone.utc).isoformat(),
+        "artifact_kind": "cluster_selection",
+        "method": method,
+        "dataset": _dataset_metadata(spec),
+    }
+    payload.update(selection)
+    path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    return path
+
+
 def save_bss_outputs(
     spec: DatasetSpec,
     method: str,
@@ -443,6 +690,7 @@ def save_bss_outputs(
 ) -> dict[str, Path]:
     output_dir.mkdir(parents=True, exist_ok=True)
     paths = bss_output_paths(spec, method, output_dir)
+    paths["cleaned"].parent.mkdir(parents=True, exist_ok=True)
     np.save(paths["cleaned"], cleaned.T)
     np.save(paths["components"], ic_comps)
     np.save(paths["spectra"], IC_ft)
@@ -452,7 +700,7 @@ def save_bss_outputs(
     metadata = {
         "saved_at": datetime.now(timezone.utc).isoformat(),
         "method": method,
-        "dataset": asdict(spec),
+        "dataset": _dataset_metadata(spec),
         "input_shape_neurons_by_frames": list(traces.shape),
         "cleaned_saved_shape_neurons_by_frames": list(cleaned.T.shape),
         "component_shape_frames_by_components": list(ic_comps.shape),
@@ -462,9 +710,17 @@ def save_bss_outputs(
         "max_iter": int(max_iter),
         "random_state": int(random_state),
     }
-    metadata["dataset"]["trace_path"] = str(spec.trace_path)
-    metadata["dataset"]["tail_angle_path"] = str(spec.tail_angle_path) if spec.tail_angle_path else None
     paths["metadata"].write_text(json.dumps(metadata, indent=2), encoding="utf-8")
+    cleaned_metadata = {
+        "saved_at": metadata["saved_at"],
+        "artifact_kind": "cleaned_trace",
+        "method": method,
+        "dataset": metadata["dataset"],
+        "input_shape_neurons_by_frames": metadata["input_shape_neurons_by_frames"],
+        "cleaned_saved_shape_neurons_by_frames": metadata["cleaned_saved_shape_neurons_by_frames"],
+        "reject_components": metadata["reject_components"],
+    }
+    paths["cleaned_metadata"].write_text(json.dumps(cleaned_metadata, indent=2), encoding="utf-8")
     return paths
 
 
@@ -510,6 +766,29 @@ def summarize_results(results: dict[str, BSSRunResult]) -> pd.DataFrame:
                 "input_shape": tuple(result.traces.shape),
                 "components_shape": tuple(result.ic_comps.shape),
                 "cleaned_shape_frames_by_neurons": tuple(result.cleaned.shape),
+                "output_dir": str(result.output_dir),
+                "saved": bool(result.saved_paths),
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def summarize_decomposition_results(
+    results: dict[str, BSSDecompositionResult],
+) -> pd.DataFrame:
+    rows = []
+    for method, result in results.items():
+        rows.append(
+            {
+                "method": method,
+                "dataset_key": result.dataset.key,
+                "data_name": result.dataset.data_name,
+                "dataset_group": result.dataset.group,
+                "input_shape": tuple(result.traces.shape),
+                "components_shape": tuple(result.ic_comps.shape),
+                "spectra_shape": tuple(result.IC_ft.shape),
+                "mixing_shape": tuple(result.A.shape),
+                "mean_shape": tuple(result.mean.shape),
                 "output_dir": str(result.output_dir),
                 "saved": bool(result.saved_paths),
             }

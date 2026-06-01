@@ -60,8 +60,8 @@ def load_trace_variants(
     """Load raw and cleaned traces with a common time x neurons orientation.
 
     When ``cleaned_root`` is provided, cleaned traces are discovered using the
-    method hierarchy ``<cleaned_root>/<method>/<cleaned_glob>`` (new layout),
-    with legacy fallback ``<cleaned_root>/<method>/<dataset_name>/<cleaned_glob>``.
+    method hierarchy ``<cleaned_root>/<method>/cleaned/<cleaned_glob>``, with
+    fallbacks for earlier method-root and method/dataset layouts.
     """
     dataset_dir = Path(dataset_dir)
     raw_path = dataset_dir / raw_name
@@ -76,13 +76,15 @@ def load_trace_variants(
     else:
         cleaned_root = Path(cleaned_root)
         resolved_dataset_name = dataset_name or dataset_dir.name
-        # New method-organized output layout:
-        #   <cleaned_root>/<method>/cleaned_<method>_<data_name>.npy
-        cleaned_paths = sorted(cleaned_root.glob(f"{method_glob}/{cleaned_glob}"))
-        # Legacy fallback layout:
-        #   <cleaned_root>/<method>/<dataset_name>/cleaned*.npy
-        if not cleaned_paths:
-            cleaned_paths = sorted(cleaned_root.glob(f"{method_glob}/{resolved_dataset_name}/{cleaned_glob}"))
+        cleaned_paths = []
+        for pattern in (
+            f"{method_glob}/cleaned/{cleaned_glob}",
+            f"{method_glob}/{cleaned_glob}",
+            f"{method_glob}/{resolved_dataset_name}/{cleaned_glob}",
+        ):
+            cleaned_paths = sorted(cleaned_root.glob(pattern))
+            if cleaned_paths:
+                break
 
     for path in cleaned_paths:
         traces = orient_time_by_neurons(_load_trace(path), expected_frames=raw.shape[0])
@@ -101,9 +103,11 @@ def load_trace_variants(
         if cleaned_root is None:
             variant_name = path.stem
         else:
-            # New layout puts cleaned arrays directly under method folder.
-            # Legacy layout nests method/<dataset_name>/.
-            if path.parent.name == resolved_dataset_name:
+            # Current layout: method/cleaned/file. Legacy layouts: method/file or
+            # method/<dataset_name>/file.
+            if path.parent.name == "cleaned":
+                method_name = path.parent.parent.name
+            elif path.parent.name == resolved_dataset_name:
                 method_name = path.parent.parent.name
             else:
                 method_name = path.parent.name
