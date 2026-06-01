@@ -62,6 +62,22 @@ def add_project_imports(project_root: Path | None = None) -> Path:
 
 def dataset_registry(project_root: Path | None = None) -> dict[str, DatasetSpec]:
     project_root = resolve_project_root() if project_root is None else Path(project_root)
+    run2_dir = (
+        project_root
+        / "data"
+        / "v2a-RSNs"
+        / "new_data_09112022"
+        / "220127_F4_run2"
+    )
+    run6_dir = (
+        project_root
+        / "data"
+        / "v2a-RSNs"
+        / "new_data_09112022"
+        / "220210_F1_run6"
+    )
+    run2_frame_rate = _frame_rate_from_analysis_info(run2_dir, default_hz=5.2962)
+    run6_frame_rate = _frame_rate_from_analysis_info(run6_dir, default_hz=5.2962)
     return {
         "motorneurons/fish3_trace2_dff": DatasetSpec(
             key="motorneurons/fish3_trace2_dff",
@@ -91,7 +107,7 @@ def dataset_registry(project_root: Path | None = None) -> dict[str, DatasetSpec]
             / "new_data_09112022"
             / "220127_F4_run2"
             / "220127_F4_F4_run2_after_dec_cells_fluorescence_signals.npy",
-            sample_rate_hz=30.0,
+            sample_rate_hz=run2_frame_rate,
             default_n_components=40,
             tail_angle_path=project_root
             / "data"
@@ -111,7 +127,7 @@ def dataset_registry(project_root: Path | None = None) -> dict[str, DatasetSpec]
             / "new_data_09112022"
             / "220127_F4_run2"
             / "220127_F4_F4_run2_after_dec_cells_spike_rate_signals.npy",
-            sample_rate_hz=30.0,
+            sample_rate_hz=run2_frame_rate,
             default_n_components=40,
             tail_angle_path=project_root
             / "data"
@@ -131,7 +147,7 @@ def dataset_registry(project_root: Path | None = None) -> dict[str, DatasetSpec]
             / "new_data_09112022"
             / "220210_F1_run6"
             / "220127_F4_F4_run2_after_dec_cells_fluorescence_signals.npy",
-            sample_rate_hz=30.0,
+            sample_rate_hz=run6_frame_rate,
             default_n_components=40,
             tail_angle_path=project_root
             / "data"
@@ -139,7 +155,7 @@ def dataset_registry(project_root: Path | None = None) -> dict[str, DatasetSpec]
             / "new_data_09112022"
             / "220210_F1_run6"
             / "220127_F4_F4_run2_after_dec_tail_angle.npy",
-            notes="V2a RSN fluorescence traces.",
+            notes="V2a RSN fluorescence traces. Uses frameRateSCAPE from analysis_info when available.",
         ),
         "v2a-RSNs/220210_F1_run6_spike_rate": DatasetSpec(
             key="v2a-RSNs/220210_F1_run6_spike_rate",
@@ -151,7 +167,7 @@ def dataset_registry(project_root: Path | None = None) -> dict[str, DatasetSpec]
             / "new_data_09112022"
             / "220210_F1_run6"
             / "220127_F4_F4_run2_after_dec_cells_spike_rate_signals.npy",
-            sample_rate_hz=30.0,
+            sample_rate_hz=run6_frame_rate,
             default_n_components=40,
             tail_angle_path=project_root
             / "data"
@@ -159,9 +175,27 @@ def dataset_registry(project_root: Path | None = None) -> dict[str, DatasetSpec]
             / "new_data_09112022"
             / "220210_F1_run6"
             / "220127_F4_F4_run2_after_dec_tail_angle.npy",
-            notes="V2a RSN spike-rate traces.",
+            notes="V2a RSN spike-rate traces. Uses frameRateSCAPE from analysis_info when available.",
         ),
     }
+
+
+def _frame_rate_from_analysis_info(run_dir: Path, default_hz: float) -> float:
+    """Load frameRateSCAPE from run analysis_info metadata, with fallback."""
+    pattern = "*_analysis_info.json"
+    for info_path in sorted(run_dir.glob(pattern)):
+        try:
+            payload = json.loads(info_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        value = payload.get("frameRateSCAPE")
+        try:
+            value = float(value)
+        except (TypeError, ValueError):
+            continue
+        if value > 0:
+            return value
+    return float(default_hz)
 
 
 def available_datasets(project_root: Path | None = None) -> pd.DataFrame:

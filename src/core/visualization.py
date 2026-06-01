@@ -2,6 +2,7 @@
 # coding: utf-8
 
 import matplotlib.pyplot as plt
+from matplotlib.animation import FuncAnimation
 import numpy as np
 from scipy.signal import welch
 
@@ -53,7 +54,7 @@ def plot_FT_spectrals(ICs, f_s, n_comps):
     plt.tight_layout()
 
 
-def plot_clusters(new_mat, predictions):  # ,centers
+def plot_clusters(new_mat, predictions, rotate=False, elev=22, azim_start=45, azim_end=405, interval=60):  # ,centers
     fig = plt.figure(figsize=(6, 6))
     ax = fig.add_subplot(111, projection="3d")
 
@@ -72,6 +73,26 @@ def plot_clusters(new_mat, predictions):  # ,centers
     ax.set_ylabel("y-axis")
     ax.set_zlabel("z-axis")
     ax.legend()
+    ax.view_init(elev=elev, azim=azim_start)
+    fig.tight_layout()
+    if not rotate:
+        return fig, ax, None
+
+    azimuths = np.linspace(float(azim_start), float(azim_end), 120)
+
+    def _update(frame):
+        ax.view_init(elev=elev, azim=float(azimuths[frame]))
+        return (ax,)
+
+    anim = FuncAnimation(
+        fig,
+        _update,
+        frames=len(azimuths),
+        interval=int(interval),
+        blit=False,
+        repeat=True,
+    )
+    return fig, ax, anim
 
 
 def plottings_spectrals(IC_ft, n_clus, alll, f_s):
