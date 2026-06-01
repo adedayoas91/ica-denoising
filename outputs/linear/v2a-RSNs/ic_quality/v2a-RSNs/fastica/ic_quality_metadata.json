@@ -1,0 +1,8 @@
+{
+  "saved_at": "2026-05-15T21:54:12.754885+00:00",
+  "method": "fastica",
+  "dataset": "v2a-RSNs/220127_F4_run2_fluorescence",
+  "sample_rate_hz": 5.2962,
+  "n_components": 50,
+  "human_in_loop": true
+}
