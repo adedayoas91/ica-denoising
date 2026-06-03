@@ -60,8 +60,9 @@ def load_trace_variants(
     """Load raw and cleaned traces with a common time x neurons orientation.
 
     When ``cleaned_root`` is provided, cleaned traces are discovered using the
-    method hierarchy ``<cleaned_root>/<method>/cleaned/<cleaned_glob>``, with
-    fallbacks for earlier method-root and method/dataset layouts.
+    method hierarchy ``<cleaned_root>/<method>/cleaned/<cleaned_glob>``, the
+    incremental hierarchy ``<cleaned_root>/<method>/incremental/<selection_id>/cleaned/<cleaned_glob>``,
+    and fallbacks for earlier method-root and method/dataset layouts.
     """
     dataset_dir = Path(dataset_dir)
     raw_path = dataset_dir / raw_name
@@ -76,15 +77,16 @@ def load_trace_variants(
     else:
         cleaned_root = Path(cleaned_root)
         resolved_dataset_name = dataset_name or dataset_dir.name
-        cleaned_paths = []
+        cleaned_paths_set: set[Path] = set()
         for pattern in (
+            f"{method_glob}/incremental/*/cleaned/{cleaned_glob}",
             f"{method_glob}/cleaned/{cleaned_glob}",
             f"{method_glob}/{cleaned_glob}",
             f"{method_glob}/{resolved_dataset_name}/{cleaned_glob}",
         ):
-            cleaned_paths = sorted(cleaned_root.glob(pattern))
-            if cleaned_paths:
-                break
+            for path in cleaned_root.glob(pattern):
+                cleaned_paths_set.add(path)
+        cleaned_paths = sorted(cleaned_paths_set)
 
     for path in cleaned_paths:
         traces = orient_time_by_neurons(_load_trace(path), expected_frames=raw.shape[0])
@@ -103,17 +105,53 @@ def load_trace_variants(
         if cleaned_root is None:
             variant_name = path.stem
         else:
-            # Current layout: method/cleaned/file. Legacy layouts: method/file or
-            # method/<dataset_name>/file.
-            if path.parent.name == "cleaned":
-                method_name = path.parent.parent.name
-            elif path.parent.name == resolved_dataset_name:
-                method_name = path.parent.parent.name
-            else:
-                method_name = path.parent.name
-            variant_name = f"{method_name}/{path.stem}"
+            variant_name = _infer_variant_name_from_cleaned_path(
+                path=path,
+                cleaned_root=cleaned_root,
+                resolved_dataset_name=resolved_dataset_name,
+            )
         variants.append(TraceVariant(variant_name, path, traces))
     return variants
+
+
+def _infer_variant_name_from_cleaned_path(
+    path: Path,
+    cleaned_root: Path,
+    resolved_dataset_name: str,
+) -> str:
+    """Return a stable variant name across canonical, incremental, and legacy layouts."""
+    stem = path.stem
+    try:
+        rel_parts = path.relative_to(cleaned_root).parts
+    except ValueError:
+        rel_parts = path.parts
+
+    # Incremental layout:
+    # <method>/incremental/<selection_id>/cleaned/<cleaned_file>.npy
+    if len(rel_parts) >= 5 and rel_parts[1] == "incremental" and rel_parts[-2] == "cleaned":
+        method_name = rel_parts[0]
+        selection_id = rel_parts[2]
+        return f"{method_name}/{selection_id}/{stem}"
+
+    # Canonical layout:
+    # <method>/cleaned/<cleaned_file>.npy
+    if len(rel_parts) >= 3 and rel_parts[-2] == "cleaned":
+        method_name = rel_parts[-3]
+        return f"{method_name}/{stem}"
+
+    # Legacy layout:
+    # <method>/<dataset_name>/<cleaned_file>.npy
+    if len(rel_parts) >= 3 and rel_parts[-2] == resolved_dataset_name:
+        method_name = rel_parts[-3]
+        return f"{method_name}/{stem}"
+
+    # Legacy layout:
+    # <method>/<cleaned_file>.npy
+    if len(rel_parts) >= 2:
+        method_name = rel_parts[-2]
+    else:
+        method_name = path.parent.name
+    return f"{method_name}/{stem}"
 
 
 def _load_trace(path: Path) -> np.ndarray:
