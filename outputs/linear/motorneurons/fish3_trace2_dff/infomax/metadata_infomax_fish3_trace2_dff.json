@@ -1,5 +1,5 @@
 {
-  "saved_at": "2026-05-15T12:28:29.488152+00:00",
+  "saved_at": "2026-06-03T23:02:42.967526+00:00",
   "method": "infomax",
   "dataset": {
     "key": "motorneurons/fish3_trace2_dff",
@@ -24,7 +24,9 @@
     11
   ],
   "n_components": 11,
+  "pca_components": null,
   "reject_components": [
+    1,
     2,
     3,
     4,

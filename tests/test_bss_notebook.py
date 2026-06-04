@@ -19,6 +19,7 @@ from bss_notebook import (
     load_bss_decomposition_outputs,
     load_bss_outputs,
     output_directory,
+    run_bss_method,
     save_bss_decomposition_outputs,
     save_bss_outputs,
     save_cleaned_trace_output,
@@ -268,6 +269,35 @@ class BSSNotebookTests(unittest.TestCase):
             self.assertIn("cleaned", result.saved_paths)
             self.assertEqual(result.saved_paths["cleaned"].parent.name, "cleaned")
             np.testing.assert_allclose(result.cleaned, cleaned)
+
+    def test_run_bss_method_forwards_pca_components_to_sobi(self) -> None:
+        with TemporaryDirectory() as tmp:
+            tmp_root = Path(tmp)
+            project_root = Path(__file__).resolve().parents[1]
+            spec = DatasetSpec(
+                key="demo/demo_data",
+                data_name="demo_data",
+                group="demo",
+                trace_path=tmp_root / "traces.npy",
+                sample_rate_hz=10.0,
+            )
+            rng = np.random.default_rng(4)
+            traces = rng.normal(size=(5, 80))
+            np.save(spec.trace_path, traces)
+
+            with patch("bss_notebook.dataset_registry", return_value={spec.key: spec}):
+                result = run_bss_method(
+                    spec.key,
+                    "sobi",
+                    n_components=5,
+                    pca_components=2,
+                    project_root=project_root,
+                    max_iter=1,
+                )
+
+            self.assertEqual(result.ic_comps.shape, (80, 2))
+            self.assertEqual(result.A.shape, (5, 2))
+            self.assertEqual(result.cleaned.shape, traces.T.shape)
 
 
 if __name__ == "__main__":

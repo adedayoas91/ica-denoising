@@ -11,8 +11,10 @@ if str(CORE_DIR) not in sys.path:
     sys.path.insert(0, str(CORE_DIR))
 
 from ica_utils import (
+    bss_dec,
     cluster,
     infomax_dec,
+    jade_dec,
     rank_clusters_by_mean_log_psd,
     reconstruct_bss,
     reject_components_from_cluster_selection,
@@ -155,6 +157,60 @@ class ICAUtilsTests(unittest.TestCase):
 
         self.assertEqual(default_lags, (1, 2, 3, 5))
         self.assertLessEqual(max(default_lags), 5)
+
+    def test_sobi_uses_supplied_pca_component_count(self) -> None:
+        rng = np.random.default_rng(1)
+        traces = rng.normal(size=(8, 120))
+
+        ic_comps, ic_ft, mixing, mean = sobi_dec(
+            traces,
+            n_comps=8,
+            pca_components=3,
+            max_iter=2,
+        )
+
+        self.assertEqual(ic_comps.shape, (120, 3))
+        self.assertEqual(ic_ft.shape, (3, 120))
+        self.assertEqual(mixing.shape, (8, 3))
+        self.assertEqual(mean.shape, (8,))
+        reconstructed = reconstruct_bss(ic_comps, mixing, mean)
+        self.assertEqual(reconstructed.shape, traces.T.shape)
+        self.assertTrue(np.all(np.isfinite(reconstructed)))
+
+    def test_jade_uses_supplied_pca_component_count(self) -> None:
+        rng = np.random.default_rng(2)
+        traces = rng.normal(size=(7, 100))
+
+        ic_comps, ic_ft, mixing, mean = jade_dec(
+            traces,
+            n_comps=7,
+            pca_components=2,
+            max_iter=2,
+            max_cumulant_matrices=10,
+        )
+
+        self.assertEqual(ic_comps.shape, (100, 2))
+        self.assertEqual(ic_ft.shape, (2, 100))
+        self.assertEqual(mixing.shape, (7, 2))
+        self.assertEqual(mean.shape, (7,))
+
+    def test_bss_dispatcher_forwards_pca_component_count_to_jade(self) -> None:
+        rng = np.random.default_rng(3)
+        traces = rng.normal(size=(6, 90))
+
+        ic_comps, ic_ft, mixing, mean = bss_dec(
+            traces,
+            n_comps=6,
+            method="jade",
+            pca_components=2,
+            max_cumulant_matrices=10,
+            max_=2,
+        )
+
+        self.assertEqual(ic_comps.shape, (90, 2))
+        self.assertEqual(ic_ft.shape, (2, 90))
+        self.assertEqual(mixing.shape, (6, 2))
+        self.assertEqual(mean.shape, (6,))
 
 
 if __name__ == "__main__":

@@ -1173,7 +1173,7 @@ def _plot_fold_metric_panel(
     ax.set_title(title)
     ax.set_ylabel(ylabel)
     ax.set_xticks(x_positions)
-    ax.set_xticklabels([_display_method_name(method) for method in method_order], rotation=35, ha="right")
+    ax.set_xticklabels([_display_method_name(method) for method in method_order], rotation=90, ha="right")
     ax.grid(axis="y", color="0.9", lw=0.8)
 
 

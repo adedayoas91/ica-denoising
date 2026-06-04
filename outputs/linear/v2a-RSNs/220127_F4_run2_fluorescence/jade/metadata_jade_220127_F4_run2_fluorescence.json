@@ -1,0 +1,38 @@
+{
+  "saved_at": "2026-06-03T21:41:39.263173+00:00",
+  "artifact_kind": "bss_decomposition",
+  "method": "jade",
+  "dataset": {
+    "key": "v2a-RSNs/220127_F4_run2_fluorescence",
+    "data_name": "220127_F4_run2_fluorescence",
+    "group": "v2a-RSNs",
+    "trace_path": "/Users/sadiq.adedayo/Documents/projects/others/ica-denoising/data/v2a-RSNs/new_data_09112022/220127_F4_run2/220127_F4_F4_run2_after_dec_cells_fluorescence_signals.npy",
+    "sample_rate_hz": 5.2962,
+    "default_n_components": 40,
+    "tail_angle_path": "/Users/sadiq.adedayo/Documents/projects/others/ica-denoising/data/v2a-RSNs/new_data_09112022/220127_F4_run2/220127_F4_F4_run2_after_dec_tail_angle.npy",
+    "notes": "V2a RSN fluorescence traces."
+  },
+  "input_shape_neurons_by_frames": [
+    844,
+    3176
+  ],
+  "component_shape_frames_by_components": [
+    3176,
+    400
+  ],
+  "spectra_shape_components_by_bins": [
+    400,
+    3176
+  ],
+  "mixing_shape_neurons_by_components": [
+    844,
+    400
+  ],
+  "mean_shape_neurons": [
+    844
+  ],
+  "n_components": 400,
+  "tol": 0.0001,
+  "max_iter": 500,
+  "random_state": 0
+}

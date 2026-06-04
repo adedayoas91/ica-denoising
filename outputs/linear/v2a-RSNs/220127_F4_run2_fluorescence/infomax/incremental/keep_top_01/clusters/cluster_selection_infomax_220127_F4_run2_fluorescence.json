@@ -1,15 +1,15 @@
 {
-  "saved_at": "2026-06-01T20:32:36.134853+00:00",
+  "saved_at": "2026-06-03T22:35:10.611969+00:00",
   "artifact_kind": "cluster_selection",
   "method": "infomax",
   "dataset": {
     "key": "v2a-RSNs/220127_F4_run2_fluorescence",
     "data_name": "220127_F4_run2_fluorescence",
     "group": "v2a-RSNs",
-    "trace_path": "/Users/sadiqadedayo/Documents/projects/ICA/ica-denoising/data/v2a-RSNs/new_data_09112022/220127_F4_run2/220127_F4_F4_run2_after_dec_cells_fluorescence_signals.npy",
+    "trace_path": "/Users/sadiq.adedayo/Documents/projects/others/ica-denoising/data/v2a-RSNs/new_data_09112022/220127_F4_run2/220127_F4_F4_run2_after_dec_cells_fluorescence_signals.npy",
     "sample_rate_hz": 5.2962,
     "default_n_components": 40,
-    "tail_angle_path": "/Users/sadiqadedayo/Documents/projects/ICA/ica-denoising/data/v2a-RSNs/new_data_09112022/220127_F4_run2/220127_F4_F4_run2_after_dec_tail_angle.npy",
+    "tail_angle_path": "/Users/sadiq.adedayo/Documents/projects/others/ica-denoising/data/v2a-RSNs/new_data_09112022/220127_F4_run2/220127_F4_F4_run2_after_dec_tail_angle.npy",
     "notes": "V2a RSN fluorescence traces."
   },
   "source_decomposition_dir": "outputs/linear/v2a-RSNs/220127_F4_run2_fluorescence/infomax",

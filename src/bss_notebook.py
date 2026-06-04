@@ -443,6 +443,7 @@ def run_bss_decomposition(
     dataset_key: str,
     method: str,
     n_components: int | None = None,
+    pca_components: int | None = None,
     save_outputs: bool = False,
     project_root: Path | None = None,
     tol: float = 0.0001,
@@ -457,6 +458,11 @@ def run_bss_decomposition(
     method = _validate_method(method)
     spec, traces = load_traces(dataset_key, project_root)
     n_components = choose_n_components(traces, n_components or spec.default_n_components)
+    pca_components = (
+        choose_n_components(traces, pca_components)
+        if pca_components is not None
+        else None
+    )
     ic_comps, IC_ft, A, mean = bss_dec(
         traces,
         n_comps=n_components,
@@ -464,6 +470,7 @@ def run_bss_decomposition(
         max_=max_iter,
         method=method,
         random_state=random_state,
+        pca_components=pca_components,
     )
     out_dir = output_directory(
         method,
@@ -484,6 +491,7 @@ def run_bss_decomposition(
             mean=mean,
             output_dir=out_dir,
             n_components=n_components,
+            pca_components=pca_components,
             tol=tol,
             max_iter=max_iter,
             random_state=random_state,
@@ -505,6 +513,7 @@ def run_bss_method(
     dataset_key: str,
     method: str,
     n_components: int | None = None,
+    pca_components: int | None = None,
     reject_components: Iterable[int] = (),
     save_outputs: bool = False,
     project_root: Path | None = None,
@@ -520,6 +529,11 @@ def run_bss_method(
     method = _validate_method(method)
     spec, traces = load_traces(dataset_key, project_root)
     n_components = choose_n_components(traces, n_components or spec.default_n_components)
+    pca_components = (
+        choose_n_components(traces, pca_components)
+        if pca_components is not None
+        else None
+    )
     ic_comps, IC_ft, A, mean = bss_dec(
         traces,
         n_comps=n_components,
@@ -527,6 +541,7 @@ def run_bss_method(
         max_=max_iter,
         method=method,
         random_state=random_state,
+        pca_components=pca_components,
     )
     cleaned = reconstruct_bss(ic_comps, A, mean, reject=list(reject_components))
     out_dir = output_directory(
@@ -550,6 +565,7 @@ def run_bss_method(
             reject_components=reject_components,
             output_dir=out_dir,
             n_components=n_components,
+            pca_components=pca_components,
             tol=tol,
             max_iter=max_iter,
             random_state=random_state,
@@ -598,6 +614,7 @@ def save_bss_decomposition_outputs(
     tol: float,
     max_iter: int,
     random_state: int,
+    pca_components: int | None = None,
 ) -> dict[str, Path]:
     output_dir.mkdir(parents=True, exist_ok=True)
     paths = bss_decomposition_output_paths(spec, method, output_dir)
@@ -617,6 +634,7 @@ def save_bss_decomposition_outputs(
         "mixing_shape_neurons_by_components": list(A.shape),
         "mean_shape_neurons": list(mean.shape),
         "n_components": int(n_components),
+        "pca_components": None if pca_components is None else int(pca_components),
         "tol": float(tol),
         "max_iter": int(max_iter),
         "random_state": int(random_state),
@@ -687,6 +705,7 @@ def save_bss_outputs(
     tol: float,
     max_iter: int,
     random_state: int,
+    pca_components: int | None = None,
 ) -> dict[str, Path]:
     output_dir.mkdir(parents=True, exist_ok=True)
     paths = bss_output_paths(spec, method, output_dir)
@@ -705,6 +724,7 @@ def save_bss_outputs(
         "cleaned_saved_shape_neurons_by_frames": list(cleaned.T.shape),
         "component_shape_frames_by_components": list(ic_comps.shape),
         "n_components": int(n_components),
+        "pca_components": None if pca_components is None else int(pca_components),
         "reject_components": [int(component) for component in reject_components],
         "tol": float(tol),
         "max_iter": int(max_iter),
@@ -728,6 +748,7 @@ def run_many_methods(
     dataset_key: str,
     methods: Iterable[str],
     n_components: int | None = None,
+    pca_components: int | None = None,
     reject_components_by_method: dict[str, Iterable[int]] | None = None,
     save_outputs: bool = False,
     project_root: Path | None = None,
@@ -743,6 +764,7 @@ def run_many_methods(
             dataset_key=dataset_key,
             method=method,
             n_components=n_components,
+            pca_components=pca_components,
             reject_components=reject_components_by_method.get(method, ()),
             save_outputs=save_outputs,
             project_root=project_root,

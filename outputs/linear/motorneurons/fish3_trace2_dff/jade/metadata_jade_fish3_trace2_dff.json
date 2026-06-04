@@ -1,5 +1,5 @@
 {
-  "saved_at": "2026-05-15T12:28:29.503437+00:00",
+  "saved_at": "2026-06-03T23:02:42.977239+00:00",
   "method": "jade",
   "dataset": {
     "key": "motorneurons/fish3_trace2_dff",
@@ -24,10 +24,13 @@
     11
   ],
   "n_components": 11,
+  "pca_components": null,
   "reject_components": [
+    0,
     2,
     3,
     4,
+    5,
     8
   ],
   "tol": 0.0001,

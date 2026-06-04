@@ -75,6 +75,7 @@ def bss_dec(
     mean : array, shape (neurons,)
     """
     method = method.lower()
+    pca_components = kwargs.pop("pca_components", None)
     if method in {"fastica", "ica"}:
         return ica_dec(data, n_comps, t=t, max_=max_)
     if method == "infomax":
@@ -92,6 +93,7 @@ def bss_dec(
             n_comps=n_comps,
             tol=t,
             max_iter=max_,
+            pca_components=pca_components,
             **kwargs,
         )
     if method == "jade":
@@ -100,6 +102,7 @@ def bss_dec(
             n_comps=n_comps,
             tol=t,
             max_iter=max_,
+            pca_components=pca_components,
             **kwargs,
         )
     raise ValueError(f"Unknown BSS method: {method}")
@@ -111,9 +114,15 @@ def sobi_dec(
     lags=(1, 2, 3, 5),
     tol=0.0001,
     max_iter=500,
+    pca_components=None,
 ):
-    """Second-order blind identification for extracted trace matrices."""
-    X, mean, X_white, _whitening = _prepare_whitened_data(data, n_comps)
+    """Second-order blind identification for extracted trace matrices.
+
+    ``pca_components`` can be used to fit SOBI in a reduced PCA subspace. When
+    omitted, SOBI keeps the historical behavior and uses ``n_comps``.
+    """
+    fit_components = _resolve_bss_pca_components(n_comps, pca_components)
+    X, mean, X_white, _whitening = _prepare_whitened_data(data, fit_components)
     covs = _lagged_covariances(X_white, lags=lags)
     rotation = _joint_diag_symmetric(covs, tol=tol, max_iter=max_iter)
     ic_comps = X_white @ rotation
@@ -126,13 +135,17 @@ def jade_dec(
     tol=0.0001,
     max_iter=500,
     max_cumulant_matrices=200,
+    pca_components=None,
 ):
     """Approximate JADE using fourth-order cumulant joint diagonalization.
 
     Full JADE builds O(k^2) cumulant matrices for k components. The
     ``max_cumulant_matrices`` cap keeps this usable for exploratory notebooks.
+    ``pca_components`` can be used to fit JADE in a reduced PCA subspace. When
+    omitted, JADE keeps the historical behavior and uses ``n_comps``.
     """
-    X, mean, X_white, _whitening = _prepare_whitened_data(data, n_comps)
+    fit_components = _resolve_bss_pca_components(n_comps, pca_components)
+    X, mean, X_white, _whitening = _prepare_whitened_data(data, fit_components)
     cumulants = _jade_cumulant_matrices(
         X_white,
         max_cumulant_matrices=max_cumulant_matrices,
@@ -243,6 +256,12 @@ def _prepare_whitened_data(data, n_comps):
     X_white = pca.fit_transform(X_centered)
     whitening = pca.components_ / np.sqrt(pca.explained_variance_)[:, np.newaxis]
     return X_centered, mean, X_white, whitening
+
+
+def _resolve_bss_pca_components(n_comps, pca_components):
+    if pca_components is None:
+        return int(n_comps)
+    return int(pca_components)
 
 
 def _format_bss_output(X_centered, mean, ic_comps, n_frames, mixing=None):
