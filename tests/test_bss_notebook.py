@@ -1,24 +1,21 @@
 from __future__ import annotations
 
 from pathlib import Path
-import sys
 from tempfile import TemporaryDirectory
 import unittest
 from unittest.mock import patch
 
 import numpy as np
 
-SRC_DIR = Path(__file__).resolve().parents[1] / "src"
-if str(SRC_DIR) not in sys.path:
-    sys.path.insert(0, str(SRC_DIR))
-
-from bss_notebook import (
+from ica_denoising.bss_notebook import (
     DatasetSpec,
     cleaned_trace_output_paths,
     cluster_selection_output_path,
+    dataset_registry,
     load_bss_decomposition_outputs,
     load_bss_outputs,
     output_directory,
+    resolve_bss_component_selection,
     run_bss_method,
     save_bss_decomposition_outputs,
     save_bss_outputs,
@@ -28,6 +25,52 @@ from bss_notebook import (
 
 
 class BSSNotebookTests(unittest.TestCase):
+    def test_dataset_registry_handles_missing_v2a_root(self) -> None:
+        with TemporaryDirectory() as tmp:
+            registry = dataset_registry(Path(tmp))
+
+            self.assertFalse(any(key.startswith("v2a-RSNs/") for key in registry))
+
+    def test_dataset_registry_discovers_direct_recording_directories(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            run_dir = root / "data" / "v2a-RSNs" / "220119_F2_run11"
+            run_dir.mkdir(parents=True)
+            trace = run_dir / "220119_F2_F2_run11_cells_fluorescence_signals.npy"
+            tail = run_dir / "220119_F2_F2_run11_tail_angle.npy"
+            np.save(trace, np.ones((3, 20)))
+            np.save(tail, np.ones(20))
+
+            registry = dataset_registry(root)
+            spec = registry["v2a-RSNs/220119_F2_run11_fluorescence"]
+
+            self.assertEqual(spec.trace_path, trace)
+            self.assertEqual(spec.tail_angle_path, tail)
+
+    def test_dataset_registry_falls_back_to_legacy_root_and_prefers_matching_names(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            run_dir = root / "data" / "v2a-RSNs" / "new_data_09112022" / "220210_F1_run6"
+            run_dir.mkdir(parents=True)
+            correct_trace = run_dir / "220210_F1_F1_run6_cells_fluorescence_signals.npy"
+            legacy_trace = run_dir / "220127_F4_F4_run2_after_dec_cells_fluorescence_signals.npy"
+            correct_tail = run_dir / "220210_F1_F1_run6_tail_angle.npy"
+            legacy_tail = run_dir / "220127_F4_F4_run2_after_dec_tail_angle.npy"
+            np.save(correct_trace, np.ones((3, 20)))
+            np.save(legacy_trace, np.zeros((3, 20)))
+            np.save(correct_tail, np.ones(100))
+            np.save(legacy_tail, np.zeros(100))
+
+            registry = dataset_registry(root)
+            spec = registry["v2a-RSNs/220210_F1_run6_fluorescence"]
+
+            self.assertEqual(spec.trace_path, correct_trace)
+            self.assertEqual(spec.tail_angle_path, correct_tail)
+            self.assertEqual(spec.recording_id, "220210_F1_run6")
+            self.assertEqual(spec.fish_id, "220210_F1")
+            self.assertEqual(spec.run_id, "run6")
+            self.assertEqual(spec.modality, "fluorescence")
+
     def test_output_directory_preserves_analysis_kind_path_segments(self) -> None:
         with TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -90,7 +133,7 @@ class BSSNotebookTests(unittest.TestCase):
                 random_state=0,
             )
 
-            with patch("bss_notebook.dataset_registry", return_value={spec.key: spec}):
+            with patch("ica_denoising.bss_notebook.dataset_registry", return_value={spec.key: spec}):
                 result = load_bss_decomposition_outputs(spec.key, "fastica", root)
 
             self.assertEqual(result.output_dir, output_dir)
@@ -216,7 +259,7 @@ class BSSNotebookTests(unittest.TestCase):
                 random_state=0,
             )
 
-            with patch("bss_notebook.dataset_registry", return_value={spec.key: spec}):
+            with patch("ica_denoising.bss_notebook.dataset_registry", return_value={spec.key: spec}):
                 result = load_bss_outputs(spec.key, "fastica", root)
 
             self.assertNotIn("cleaned", result.saved_paths)
@@ -263,12 +306,38 @@ class BSSNotebookTests(unittest.TestCase):
                 random_state=0,
             )
 
-            with patch("bss_notebook.dataset_registry", return_value={spec.key: spec}):
+            with patch("ica_denoising.bss_notebook.dataset_registry", return_value={spec.key: spec}):
                 result = load_bss_outputs(spec.key, "fastica", root)
 
             self.assertIn("cleaned", result.saved_paths)
             self.assertEqual(result.saved_paths["cleaned"].parent.name, "cleaned")
             np.testing.assert_allclose(result.cleaned, cleaned)
+
+    def test_sobi_and_jade_auto_select_pca_rank_from_variance_threshold(self) -> None:
+        rng = np.random.default_rng(11)
+        latent = rng.normal(size=(2, 120))
+        mixing = rng.normal(size=(8, 2))
+        traces = mixing @ latent + 0.01 * rng.normal(size=(8, 120))
+
+        fastica = resolve_bss_component_selection(traces, "fastica")
+        sobi = resolve_bss_component_selection(
+            traces,
+            "sobi",
+            pca_variance_threshold=0.95,
+        )
+        jade = resolve_bss_component_selection(
+            traces,
+            "jade",
+            pca_variance_threshold=0.95,
+        )
+
+        self.assertEqual(fastica.n_components, min(traces.shape))
+        self.assertIsNone(fastica.pca_components)
+        self.assertLess(sobi.pca_components, fastica.n_components)
+        self.assertLess(jade.pca_components, fastica.n_components)
+        self.assertGreaterEqual(sobi.pca_explained_variance_ratio, 0.95)
+        self.assertGreaterEqual(jade.pca_explained_variance_ratio, 0.95)
+        self.assertEqual(sobi.component_selection_mode, "pca_variance_threshold")
 
     def test_run_bss_method_forwards_pca_components_to_sobi(self) -> None:
         with TemporaryDirectory() as tmp:
@@ -285,7 +354,7 @@ class BSSNotebookTests(unittest.TestCase):
             traces = rng.normal(size=(5, 80))
             np.save(spec.trace_path, traces)
 
-            with patch("bss_notebook.dataset_registry", return_value={spec.key: spec}):
+            with patch("ica_denoising.bss_notebook.dataset_registry", return_value={spec.key: spec}):
                 result = run_bss_method(
                     spec.key,
                     "sobi",

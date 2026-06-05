@@ -7,7 +7,7 @@ import unittest
 import numpy as np
 import pandas as pd
 
-from ic_quality import (
+from ica_denoising.ic_quality import (
     ICFeatureConfig,
     compute_ic_features,
     leave_one_ic_out_validation,
@@ -89,7 +89,7 @@ class ICQualityTests(unittest.TestCase):
         self.assertEqual(set(validation["component"]), {0, 1, 2, 3})
         self.assertIn("reference_corr_delta", validation.columns)
 
-    def test_pipeline_writes_review_artifacts(self) -> None:
+    def test_pipeline_writes_quality_artifacts(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             result = run_ic_quality_pipeline(
                 ic_comps=self.ic_comps,
@@ -105,6 +105,7 @@ class ICQualityTests(unittest.TestCase):
             self.assertIn("features", result.saved_paths)
             self.assertTrue(result.saved_paths["features"].exists())
             self.assertTrue(result.saved_paths["html_report"].exists())
+            self.assertEqual(result.saved_paths["html_report"].name, "ic_quality_report.html")
 
 
 if __name__ == "__main__":

@@ -1,16 +1,10 @@
 from __future__ import annotations
 
-from pathlib import Path
-import sys
 import unittest
 
 import numpy as np
 
-CORE_DIR = Path(__file__).resolve().parents[1] / "src" / "core"
-if str(CORE_DIR) not in sys.path:
-    sys.path.insert(0, str(CORE_DIR))
-
-from ica_utils import (
+from ica_denoising.core.ica_utils import (
     bss_dec,
     cluster,
     infomax_dec,
