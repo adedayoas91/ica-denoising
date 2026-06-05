@@ -1,0 +1,141 @@
+{
+  "n_splits": 5,
+  "gap": 14,
+  "bss_methods": [
+    "fastica",
+    "infomax",
+    "sobi",
+    "jade"
+  ],
+  "n_components": null,
+  "bss_pca_components": null,
+  "bss_pca_variance_threshold": 0.95,
+  "bss_tolerance": 0.0001,
+  "bss_max_iter": 500,
+  "sobi_lags": [
+    1,
+    2,
+    3,
+    5
+  ],
+  "jade_max_cumulant_matrices": 200,
+  "n_clusters": 7,
+  "keep_cluster_counts": [
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7
+  ],
+  "selection_strategies": [
+    "low_frequency",
+    "high_frequency",
+    "random",
+    "energy_matched_random",
+    "all"
+  ],
+  "selection_random_seeds": [
+    0,
+    1,
+    2,
+    3,
+    4
+  ],
+  "cluster_stability_seeds": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8,
+    9,
+    10,
+    11,
+    12,
+    13,
+    14,
+    15,
+    16,
+    17,
+    18,
+    19
+  ],
+  "cluster_stability_counts": [
+    5,
+    7,
+    9
+  ],
+  "cluster_stability_feature_transforms": [
+    "raw",
+    "log1p",
+    "normalized"
+  ],
+  "cluster_stability_keep_count": 2,
+  "feature_start_bin": 30,
+  "feature_transform": "log1p",
+  "welch_nperseg": 250,
+  "welch_noverlap": 125,
+  "ranking_fmin_hz": 0.0,
+  "ranking_fmax_hz": 0.2,
+  "ranking_aggregate": "peak",
+  "baseline_ranks": [
+    40
+  ],
+  "include_energy_matched_pca": true,
+  "lowpass_cutoffs_hz": [
+    0.1,
+    0.2,
+    0.4
+  ],
+  "decoder_lags": [
+    0,
+    1,
+    2
+  ],
+  "decoder_target_shift": 0,
+  "decoder_ridge_alpha": 10.0,
+  "bout_quantile": 0.75,
+  "null_block_size": 60,
+  "null_block_sizes": [
+    30,
+    60,
+    120
+  ],
+  "null_seeds": [
+    0,
+    1,
+    2,
+    3,
+    4
+  ],
+  "uncertainty_block_size": 60,
+  "uncertainty_n_bootstrap": 2000,
+  "uncertainty_n_permutations": 5000,
+  "random_state": 0,
+  "causal_transition_models": [
+    "linear",
+    "mlp"
+  ],
+  "causal": {
+    "window": 15,
+    "target_shifts": [
+      0,
+      1,
+      2,
+      4
+    ],
+    "latent_dim": 3,
+    "n_splits": 5,
+    "gap": 14,
+    "ridge_alpha": 10.0,
+    "random_state": 0,
+    "transition_model": "linear",
+    "mlp_hidden_units": 16,
+    "mlp_max_iter": 500
+  }
+}

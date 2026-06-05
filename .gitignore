@@ -156,14 +156,9 @@ venv/
 ENV/
 env.bak/
 venv.bak/
-*.lock
 
 # data and big files
 data/
-*.h5
-*.npy
-*.mat
-*.csv
 
 # Spyder project settings
 .spyderproject
@@ -224,3 +219,11 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# dir
+others/
+scripts/
+.DS_Store
+
+# Generated analysis outputs
+outputs/
