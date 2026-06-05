@@ -92,11 +92,9 @@ def resolve_project_root(start: Path | None = None) -> Path:
 def add_project_imports(project_root: Path | None = None) -> Path:
     """Add project source directories to ``sys.path`` for notebooks."""
     project_root = resolve_project_root() if project_root is None else Path(project_root)
-    # Keep src/core for external legacy notebooks that still import ``ica_utils`` directly.
-    for path in (project_root / "src", project_root / "src" / "core"):
-        path_str = str(path)
-        if path_str not in sys.path:
-            sys.path.insert(0, path_str)
+    path_str = str(project_root / "src")
+    if path_str not in sys.path:
+        sys.path.insert(0, path_str)
     return project_root
 
 
@@ -258,7 +256,68 @@ def load_traces(dataset_key: str, project_root: Path | None = None) -> tuple[Dat
     traces = np.asarray(np.load(spec.trace_path, allow_pickle=False), dtype=float)
     if traces.ndim != 2:
         raise ValueError(f"{spec.trace_path} must be 2D, got shape {traces.shape}.")
+    if spec.group == "v2a-RSNs":
+        traces = _subset_v2a_cells(spec, traces)
+        traces = _drop_v2a_bad_frames(spec, traces)
     return spec, replace_nonfinite_by_neuron_median(traces)
+
+
+def _subset_v2a_cells(spec: DatasetSpec, traces: np.ndarray) -> np.ndarray:
+    selected = _v2a_selected_cell_indices(spec)
+    if selected.size == 0:
+        raise ValueError(f"{spec.key} has no emitter/receiver cell indices to subset.")
+    if np.any(selected < 0) or np.any(selected >= traces.shape[0]):
+        raise ValueError(
+            f"{spec.key} has cell indices outside trace bounds 0..{traces.shape[0] - 1}."
+        )
+    return traces[selected, :]
+
+
+def _drop_v2a_bad_frames(spec: DatasetSpec, traces: np.ndarray) -> np.ndarray:
+    bad_frames = _v2a_bad_frame_indices(spec)
+    if bad_frames.size == 0:
+        return traces
+    if np.any(bad_frames < 0) or np.any(bad_frames >= traces.shape[1]):
+        raise ValueError(
+            f"{spec.key} has bad frame indices outside trace bounds 0..{traces.shape[1] - 1}."
+        )
+    keep_mask = np.ones(traces.shape[1], dtype=bool)
+    keep_mask[bad_frames] = False
+    return traces[:, keep_mask]
+
+
+def _v2a_selected_cell_indices(spec: DatasetSpec) -> np.ndarray:
+    run_dir = spec.trace_path.parent
+    recording_id = spec.recording_id or run_dir.name
+    emitter_path = _best_recording_file(run_dir, recording_id, "emitter_cells")
+    receiver_path = _best_recording_file(run_dir, recording_id, "receiver_cells")
+    if emitter_path is None or receiver_path is None:
+        raise FileNotFoundError(
+            f"Missing emitter/receiver cell index files for {spec.key} in {run_dir}."
+        )
+    emitter = np.asarray(np.load(emitter_path, allow_pickle=False), dtype=int).reshape(-1)
+    receiver = np.asarray(np.load(receiver_path, allow_pickle=False), dtype=int).reshape(-1)
+    ordered_unique = list(dict.fromkeys(np.concatenate([emitter, receiver]).tolist()))
+    return np.asarray(ordered_unique, dtype=int)
+
+
+def _v2a_bad_frame_indices(spec: DatasetSpec) -> np.ndarray:
+    run_dir = spec.trace_path.parent
+    info_path = _analysis_info_path(run_dir)
+    if info_path is None:
+        raise FileNotFoundError(f"Missing *_analysis_info.json for {spec.key} in {run_dir}.")
+    payload = json.loads(info_path.read_text(encoding="utf-8"))
+    bad_frames = payload.get("bad_frames", [])
+    if bad_frames is None:
+        return np.empty(0, dtype=int)
+    return np.asarray(bad_frames, dtype=int).reshape(-1)
+
+
+def _analysis_info_path(run_dir: Path) -> Path | None:
+    matches = sorted(run_dir.glob("*_analysis_info.json"))
+    if not matches:
+        return None
+    return matches[0]
 
 
 def replace_nonfinite_by_neuron_median(traces: np.ndarray) -> np.ndarray:
@@ -302,6 +361,15 @@ def output_directory(
     for part in parts[1:]:
         output_dir = output_dir / part
     return output_dir
+
+
+def output_data_name(spec: DatasetSpec, override: str | None = None) -> str:
+    """Return the directory stem to use for outputs."""
+    if override:
+        return sanitize_name(override)
+    if spec.recording_id:
+        return sanitize_name(spec.recording_id)
+    return sanitize_name(spec.data_name)
 
 
 def bss_decomposition_output_paths(
@@ -362,6 +430,7 @@ def load_bss_decomposition_outputs(
     project_root: Path | None = None,
     analysis_kind: str = "linear",
     output_dir: Path | None = None,
+    output_data_name_override: str | None = None,
 ) -> BSSDecompositionResult:
     """Load saved BSS decomposition artifacts produced by the linear notebook."""
     project_root = add_project_imports(project_root)
@@ -370,7 +439,7 @@ def load_bss_decomposition_outputs(
     output_dir = (
         output_directory(
             method,
-            spec.data_name,
+            output_data_name(spec, output_data_name_override),
             project_root,
             analysis_kind=analysis_kind,
             dataset_group=spec.group,
@@ -416,6 +485,7 @@ def load_bss_outputs(
     project_root: Path | None = None,
     analysis_kind: str = "linear",
     output_dir: Path | None = None,
+    output_data_name_override: str | None = None,
 ) -> BSSRunResult:
     """Load saved BSS artifacts, including a cleaned trace when present."""
     result = load_bss_decomposition_outputs(
@@ -424,6 +494,7 @@ def load_bss_outputs(
         project_root=project_root,
         analysis_kind=analysis_kind,
         output_dir=output_dir,
+        output_data_name_override=output_data_name_override,
     )
     paths = bss_output_paths(result.dataset, method, result.output_dir)
     saved_paths = dict(result.saved_paths)
@@ -478,6 +549,7 @@ def run_bss_decomposition(
     max_iter: int = 500,
     random_state: int = 0,
     analysis_kind: str = "linear",
+    output_data_name_override: str | None = None,
 ) -> BSSDecompositionResult:
     """Run one BSS method and optionally save IC decomposition artifacts only."""
     project_root = add_project_imports(project_root)
@@ -503,7 +575,7 @@ def run_bss_decomposition(
     )
     out_dir = output_directory(
         method,
-        spec.data_name,
+        output_data_name(spec, output_data_name_override),
         project_root,
         analysis_kind=analysis_kind,
         dataset_group=spec.group,
@@ -559,6 +631,7 @@ def run_bss_method(
     max_iter: int = 500,
     random_state: int = 0,
     analysis_kind: str = "linear",
+    output_data_name_override: str | None = None,
 ) -> BSSRunResult:
     """Run one BSS method and optionally save cleaned traces plus run artifacts."""
     project_root = add_project_imports(project_root)
@@ -585,7 +658,7 @@ def run_bss_method(
     cleaned = reconstruct_bss(ic_comps, A, mean, reject=list(reject_components))
     out_dir = output_directory(
         method,
-        spec.data_name,
+        output_data_name(spec, output_data_name_override),
         project_root,
         analysis_kind=analysis_kind,
         dataset_group=spec.group,
@@ -654,6 +727,15 @@ def resolve_bss_component_selection(
 
     if pca_components is not None:
         resolved_pca_components = choose_n_components(traces, pca_components)
+        if resolved_pca_components >= min(traces.shape):
+            return BSSComponentSelection(
+                method=method,
+                n_components=n_components,
+                pca_components=None,
+                pca_variance_threshold=None,
+                pca_explained_variance_ratio=None,
+                component_selection_mode="full_trace_count",
+            )
         explained = pca_explained_variance_for_rank(traces, resolved_pca_components)
         return BSSComponentSelection(
             method=method,

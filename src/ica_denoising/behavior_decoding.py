@@ -56,6 +56,7 @@ def load_trace_variants(
     cleaned_root: Path | None = None,
     dataset_name: str | None = None,
     method_glob: str = "*",
+    raw_traces: np.ndarray | None = None,
 ) -> list[TraceVariant]:
     """Load raw and cleaned traces with a common time x neurons orientation.
 
@@ -66,9 +67,13 @@ def load_trace_variants(
     """
     dataset_dir = Path(dataset_dir)
     raw_path = dataset_dir / raw_name
-    raw = _load_trace(raw_path)
-    raw = orient_time_by_neurons(raw)
-    raw = replace_nonfinite(raw)
+    if raw_traces is None:
+        raw = _load_trace(raw_path)
+        raw = orient_time_by_neurons(raw)
+        raw = replace_nonfinite(raw)
+    else:
+        raw = orient_time_by_neurons(np.asarray(raw_traces, dtype=float))
+        raw = replace_nonfinite(raw)
 
     variants = [TraceVariant("raw", raw_path, raw)]
 

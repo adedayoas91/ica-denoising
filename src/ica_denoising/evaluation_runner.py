@@ -79,6 +79,7 @@ def run_dataset_evaluation(
     project_root: Path | None = None,
     config_path: Path | None = None,
     output_root: Path | None = None,
+    output_data_name_override: str | None = None,
 ) -> dict[str, Path]:
     project_root = add_project_imports(
         resolve_project_root() if project_root is None else Path(project_root)
@@ -104,7 +105,10 @@ def run_dataset_evaluation(
         if output_root is None
         else Path(output_root)
     )
-    output_dir = output_root / spec.group / spec.data_name
+    output_name = spec.recording_id or spec.data_name
+    if output_data_name_override:
+        output_name = output_data_name_override
+    output_dir = output_root / spec.group / output_name
     output_dir.mkdir(parents=True, exist_ok=True)
     paths = {
         "trace_metrics": output_dir / "strict_trace_preservation_metrics.csv",

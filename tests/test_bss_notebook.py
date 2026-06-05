@@ -12,6 +12,7 @@ from ica_denoising.bss_notebook import (
     cleaned_trace_output_paths,
     cluster_selection_output_path,
     dataset_registry,
+    load_traces,
     load_bss_decomposition_outputs,
     load_bss_outputs,
     output_directory,
@@ -71,6 +72,33 @@ class BSSNotebookTests(unittest.TestCase):
             self.assertEqual(spec.run_id, "run6")
             self.assertEqual(spec.modality, "fluorescence")
 
+    def test_load_traces_subsets_v2a_cells_and_drops_bad_frames(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            run_dir = root / "data" / "v2a-RSNs" / "220119_F2_run11"
+            run_dir.mkdir(parents=True)
+            trace = run_dir / "220119_F2_F2_run11_cells_fluorescence_signals.npy"
+            tail = run_dir / "220119_F2_F2_run11_tail_angle.npy"
+            emitter = run_dir / "220119_F2_F2_run11_emitter_cells.npy"
+            receiver = run_dir / "220119_F2_F2_run11_receiver_cells.npy"
+            info = run_dir / "220119_F2_F2_run11_analysis_info.json"
+
+            traces = np.arange(48, dtype=float).reshape(6, 8)
+            np.save(trace, traces)
+            np.save(tail, np.ones(8))
+            np.save(emitter, np.array([4, 1], dtype=int))
+            np.save(receiver, np.array([3, 5, 1], dtype=int))
+            info.write_text(
+                '{"frameRateSCAPE": 5.0, "bad_frames": [1, 6]}',
+                encoding="utf-8",
+            )
+
+            spec, filtered = load_traces("v2a-RSNs/220119_F2_run11_fluorescence", root)
+
+            expected = traces[[4, 1, 3, 5]][:, [0, 2, 3, 4, 5, 7]]
+            self.assertEqual(spec.recording_id, "220119_F2_run11")
+            np.testing.assert_allclose(filtered, expected)
+
     def test_output_directory_preserves_analysis_kind_path_segments(self) -> None:
         with TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -94,6 +122,64 @@ class BSSNotebookTests(unittest.TestCase):
                 / "demo_data"
                 / "fastica",
             )
+
+    def test_load_bss_decomposition_outputs_supports_output_name_override(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            run_dir = root / "demo"
+            run_dir.mkdir(parents=True)
+            spec = DatasetSpec(
+                key="v2a-RSNs/demo_fluorescence",
+                data_name="demo_fluorescence",
+                group="v2a-RSNs",
+                trace_path=run_dir / "demo_cells_fluorescence_signals.npy",
+                sample_rate_hz=10.0,
+                recording_id="demo",
+            )
+            traces = np.arange(12, dtype=float).reshape(3, 4)
+            np.save(spec.trace_path, traces)
+            np.save(run_dir / "demo_emitter_cells.npy", np.array([0, 2], dtype=int))
+            np.save(run_dir / "demo_receiver_cells.npy", np.array([1], dtype=int))
+            (run_dir / "demo_analysis_info.json").write_text(
+                '{"frameRateSCAPE": 10.0, "bad_frames": []}',
+                encoding="utf-8",
+            )
+
+            ic_comps = np.arange(8, dtype=float).reshape(4, 2)
+            spectra = np.arange(10, dtype=float).reshape(2, 5)
+            mixing = np.array([[1.0, 0.0], [0.5, 0.25], [0.0, 1.0]])
+            mean = np.array([0.1, 0.2, 0.3])
+            output_dir = output_directory(
+                "fastica",
+                "demo",
+                root,
+                dataset_group=spec.group,
+            )
+            save_bss_decomposition_outputs(
+                spec=spec,
+                method="fastica",
+                traces=traces,
+                ic_comps=ic_comps,
+                IC_ft=spectra,
+                A=mixing,
+                mean=mean,
+                output_dir=output_dir,
+                n_components=2,
+                tol=0.0001,
+                max_iter=500,
+                random_state=0,
+            )
+
+            with patch("ica_denoising.bss_notebook.dataset_registry", return_value={spec.key: spec}):
+                result = load_bss_decomposition_outputs(
+                    spec.key,
+                    "fastica",
+                    root,
+                    output_data_name_override="demo",
+                )
+
+            self.assertEqual(result.output_dir, output_dir)
+            np.testing.assert_allclose(result.ic_comps, ic_comps)
 
     def test_load_bss_decomposition_outputs_roundtrips_ic_artifacts(self) -> None:
         with TemporaryDirectory() as tmp:
@@ -367,6 +453,21 @@ class BSSNotebookTests(unittest.TestCase):
             self.assertEqual(result.ic_comps.shape, (80, 2))
             self.assertEqual(result.A.shape, (5, 2))
             self.assertEqual(result.cleaned.shape, traces.T.shape)
+
+    def test_sobi_full_rank_pca_request_disables_pca_projection(self) -> None:
+        traces = np.arange(40, dtype=float).reshape(5, 8)
+
+        selection = resolve_bss_component_selection(
+            traces,
+            "sobi",
+            n_components=traces.shape[0],
+            pca_components=traces.shape[0],
+        )
+
+        self.assertEqual(selection.n_components, traces.shape[0])
+        self.assertIsNone(selection.pca_components)
+        self.assertIsNone(selection.pca_explained_variance_ratio)
+        self.assertEqual(selection.component_selection_mode, "full_trace_count")
 
 
 if __name__ == "__main__":
