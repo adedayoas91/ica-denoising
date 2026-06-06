@@ -24,6 +24,10 @@ class EvaluationRunnerTests(unittest.TestCase):
         self.assertIsInstance(config.bss_methods, tuple)
         self.assertIsInstance(config.cluster_stability_seeds, tuple)
         self.assertEqual(config.causal_transition_models, ("linear", "mlp"))
+        self.assertEqual(config.target_bout_quantiles, (0.65, 0.85))
+        self.assertEqual(config.target_smooth_windows, (3, 5))
+        self.assertEqual(config.null_strategies, ("block_shuffle", "circular_shift"))
+        self.assertEqual(config.causal_sufficiency_targets, ("vigor",))
         self.assertIsNone(config.n_components)
         self.assertIsNone(config.bss_pca_components)
         self.assertEqual(config.bss_pca_variance_threshold, 0.95)
@@ -101,6 +105,12 @@ class EvaluationRunnerTests(unittest.TestCase):
                 ]
             )
             uncertainty = pd.DataFrame([{"method": "clean", "effect": 0.1}])
+            causal_sufficiency = pd.DataFrame(
+                [{"variant": "clean", "target": "vigor", "rmse_delta_aug_minus_base": -0.1}]
+            )
+            artifact = pd.DataFrame(
+                [{"variant": "clean", "artifact_center": 40, "rmse": 0.1}]
+            )
             bpi = pd.DataFrame([{"recording": "already-present", "method": "clean", "bpi": 90.0}])
             tables = {
                 "trace_metrics": (
@@ -110,6 +120,8 @@ class EvaluationRunnerTests(unittest.TestCase):
                 "behavior_metrics": (behavior, "behavior.csv"),
                 "behavior_uncertainty": (uncertainty, "uncertainty.csv"),
                 "causal_metrics": (causal, "causal.csv"),
+                "causal_sufficiency": (causal_sufficiency, "causal_sufficiency.csv"),
+                "artifact_probe_metrics": (artifact, "artifact.csv"),
                 "bpi_ablation": (bpi, "bpi.csv"),
             }
             paths = {}
@@ -137,8 +149,12 @@ class EvaluationRunnerTests(unittest.TestCase):
 
             aggregate_bpi = pd.read_csv(aggregate_paths["bpi"])
             aggregate_trace = pd.read_csv(aggregate_paths["trace"])
+            aggregate_artifact = pd.read_csv(aggregate_paths["artifact_probe"])
+            aggregate_sufficiency = pd.read_csv(aggregate_paths["causal_sufficiency"])
             self.assertEqual(aggregate_bpi["recording"].iloc[0], "run1")
             self.assertEqual(aggregate_trace["recording"].iloc[0], "run1")
+            self.assertEqual(aggregate_artifact["recording"].iloc[0], "run1")
+            self.assertEqual(aggregate_sufficiency["recording"].iloc[0], "run1")
 
 
 if __name__ == "__main__":

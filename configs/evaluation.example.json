@@ -100,6 +100,14 @@
   "decoder_target_shift": 0,
   "decoder_ridge_alpha": 10.0,
   "bout_quantile": 0.75,
+  "target_bout_quantiles": [
+    0.65,
+    0.85
+  ],
+  "target_smooth_windows": [
+    3,
+    5
+  ],
   "null_block_size": 60,
   "null_block_sizes": [
     30,
@@ -113,6 +121,11 @@
     3,
     4
   ],
+  "null_strategies": [
+    "block_shuffle",
+    "circular_shift"
+  ],
+  "null_circular_min_shift": 60,
   "uncertainty_block_size": 60,
   "uncertainty_n_bootstrap": 2000,
   "uncertainty_n_permutations": 5000,
@@ -121,6 +134,11 @@
     "linear",
     "mlp"
   ],
+  "causal_sufficiency_targets": [
+    "vigor"
+  ],
+  "artifact_probe_centers": [],
+  "artifact_probe_half_width": 2,
   "causal": {
     "window": 15,
     "target_shifts": [

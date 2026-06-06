@@ -6,7 +6,16 @@ import unittest
 
 import numpy as np
 
-from ica_denoising.behavior_decoding import classification_metrics, load_trace_variants
+from ica_denoising.behavior_decoding import (
+    BehaviorTargetVariant,
+    TraceVariant,
+    circular_shift,
+    classification_metrics,
+    run_decoding_experiment,
+    make_behavior_targets,
+    make_behavior_target_variants,
+    load_trace_variants,
+)
 
 
 class BehaviorDecodingLoadTests(unittest.TestCase):
@@ -70,6 +79,75 @@ class BehaviorDecodingLoadTests(unittest.TestCase):
             )
             np.testing.assert_allclose(variants[0].traces, filtered_raw.T)
             np.testing.assert_allclose(variants[1].traces, (filtered_raw * 0.5).T)
+
+    def test_behavior_target_variants_use_configured_quantiles_and_windows(self) -> None:
+        tail_angle = np.array([0.0, 1.0, 3.0, 2.0, 6.0, 7.0, 7.5, 9.0])
+        targets = make_behavior_targets(
+            tail_angle,
+            n_frames=4,
+            bout_quantile=0.75,
+            smooth_window=1,
+        )
+
+        variants = make_behavior_target_variants(
+            targets,
+            bout_quantiles=(0.5, 0.9),
+            smooth_windows=(1, 3),
+        )
+
+        self.assertEqual(
+            [variant.target_variant for variant in variants],
+            ["primary", "q0p5_sw1", "q0p5_sw3", "q0p9_sw1", "q0p9_sw3"],
+        )
+        self.assertEqual(variants[1].bout_quantile, 0.5)
+        self.assertEqual(variants[2].smooth_window, 3)
+        self.assertNotEqual(
+            float(variants[1].bout_threshold),
+            float(variants[3].bout_threshold),
+        )
+        self.assertFalse(np.array_equal(variants[1].vigor, variants[2].vigor))
+
+    def test_circular_shift_preserves_values_and_changes_order(self) -> None:
+        values = np.arange(8)
+        shifted = circular_shift(values, np.random.default_rng(0))
+
+        np.testing.assert_array_equal(np.sort(shifted), values)
+        self.assertFalse(np.array_equal(shifted, values))
+
+    def test_simple_decoding_emits_target_and_null_provenance(self) -> None:
+        time = np.arange(60, dtype=float)
+        target = np.sin(time / 5.0)
+        traces = np.column_stack([target, np.cos(time / 7.0)])
+
+        result = run_decoding_experiment(
+            [TraceVariant("raw", Path("raw.npy"), traces)],
+            target,
+            target_name="tail_vigor",
+            task="regression",
+            n_splits=3,
+            gap=1,
+            include_transfer=False,
+            include_null=True,
+            null_block_size=6,
+            null_strategies=("block_shuffle", "circular_shift"),
+            target_variants=(
+                BehaviorTargetVariant("primary", target),
+                BehaviorTargetVariant(
+                    "smooth",
+                    np.convolve(target, np.ones(3) / 3, mode="same"),
+                    0.75,
+                    3,
+                ),
+            ),
+        )
+
+        self.assertEqual(set(result.metrics["target_variant"]), {"primary", "smooth"})
+        self.assertEqual(
+            set(result.metrics["null_strategy"]),
+            {"observed", "block_shuffle", "circular_shift"},
+        )
+        self.assertIn("target_variant", result.predictions.columns)
+        self.assertIn("null_strategy", result.predictions.columns)
 
 
 if __name__ == "__main__":

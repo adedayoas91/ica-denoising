@@ -194,11 +194,60 @@ class EvaluationPipelineTests(unittest.TestCase):
         self.assertEqual(result.leakage_audit["n_test_frames_seen_during_fit"].max(), 0)
         self.assertIn("dynamic_mse_normalized", result.causal_metrics.columns)
         self.assertIn("fold", result.causal_embeddings.columns)
+        self.assertFalse(result.causal_sufficiency.empty)
+        self.assertIn("rmse_delta_aug_minus_base", result.causal_sufficiency.columns)
+        self.assertIn("target_variant", result.behavior_metrics.columns)
+        self.assertIn("null_strategy", result.behavior_metrics.columns)
         self.assertIn("spectral_power_retention", result.trace_metrics.columns)
         raw_trace_metrics = result.trace_metrics[result.trace_metrics["variant"] == "raw"]
         np.testing.assert_allclose(raw_trace_metrics["global_pearson"], 1.0)
         np.testing.assert_allclose(raw_trace_metrics["retained_energy_fraction"], 1.0)
         np.testing.assert_allclose(raw_trace_metrics["spectral_power_retention"], 1.0)
+
+    def test_target_sensitivity_and_circular_null_emit_provenance(self) -> None:
+        config = EvaluationConfig(
+            sample_rate_hz=10.0,
+            n_splits=2,
+            gap=5,
+            bss_methods=(),
+            baseline_ranks=(),
+            lowpass_cutoffs_hz=(),
+            decoder_lags=(0, 1),
+            target_bout_quantiles=(0.65,),
+            target_smooth_windows=(3,),
+            null_block_size=12,
+            null_seeds=(0,),
+            null_strategies=("block_shuffle", "circular_shift"),
+            causal=CausalStateConfig(window=6, target_shifts=(0,), latent_dim=2, gap=5),
+            artifact_probe_centers=(),
+        )
+
+        result = run_evaluation(self.traces, self.targets, config)
+
+        self.assertIn("q0.65_smooth3", set(result.behavior_metrics["target_variant"]))
+        nulls = result.behavior_metrics[result.behavior_metrics["comparison"] == "null_within"]
+        self.assertEqual(set(nulls["null_strategy"]), {"block_shuffle", "circular_shift"})
+
+    def test_artifact_probe_uses_configured_held_out_centers(self) -> None:
+        config = EvaluationConfig(
+            sample_rate_hz=10.0,
+            n_splits=2,
+            gap=5,
+            bss_methods=(),
+            baseline_ranks=(),
+            lowpass_cutoffs_hz=(),
+            decoder_lags=(0, 1),
+            null_seeds=(0,),
+            causal=CausalStateConfig(window=6, target_shifts=(0,), latent_dim=2, gap=5),
+            artifact_probe_centers=(50,),
+            artifact_probe_half_width=2,
+        )
+
+        result = run_evaluation(self.traces, self.targets, config)
+
+        self.assertFalse(result.artifact_probe_metrics.empty)
+        self.assertIn("artifact_center", result.artifact_probe_metrics.columns)
+        self.assertIn(50, set(result.artifact_probe_metrics["artifact_center"]))
 
 
 if __name__ == "__main__":

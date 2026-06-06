@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable, Sequence
+from typing import Iterable, Mapping, Sequence
 import warnings
 
 from joblib import Parallel, delayed
@@ -33,6 +33,18 @@ class BehaviorTargets:
     vigor: np.ndarray
     bout_state: np.ndarray
     bout_threshold: float
+    bout_quantile: float = 0.75
+    smooth_window: int = 3
+    target_variant: str = "primary"
+    raw_vigor: np.ndarray | None = None
+
+
+@dataclass(frozen=True)
+class BehaviorTargetVariant:
+    name: str
+    target: np.ndarray
+    bout_quantile: float | None = None
+    smooth_window: int | None = None
 
 
 @dataclass(frozen=True)
@@ -210,11 +222,70 @@ def make_behavior_targets(
     angle = bin_signal_to_frames(tail_angle, n_frames, reducer="mean")
     tail_velocity = np.diff(tail_angle, prepend=tail_angle[0])
     vigor = bin_signal_to_frames(tail_velocity, n_frames, reducer="rms")
+    raw_vigor = vigor.copy()
     if smooth_window > 1:
         vigor = moving_average(vigor, smooth_window)
     threshold = float(np.quantile(vigor, bout_quantile))
     bout_state = (vigor >= threshold).astype(int)
-    return BehaviorTargets(angle=angle, vigor=vigor, bout_state=bout_state, bout_threshold=threshold)
+    return BehaviorTargets(
+        angle=angle,
+        vigor=vigor,
+        bout_state=bout_state,
+        bout_threshold=threshold,
+        bout_quantile=float(bout_quantile),
+        smooth_window=int(smooth_window),
+        raw_vigor=raw_vigor,
+    )
+
+
+def make_behavior_target_variants(
+    targets: BehaviorTargets,
+    *,
+    bout_quantiles: Iterable[float] = (),
+    smooth_windows: Iterable[int] = (),
+) -> tuple[BehaviorTargets, ...]:
+    """Return the primary behavior target plus configured vigor/bout variants."""
+    variants = [targets]
+    seen = {targets.target_variant}
+    base_vigor = (
+        np.asarray(targets.raw_vigor, dtype=float)
+        if targets.raw_vigor is not None
+        else np.asarray(targets.vigor, dtype=float)
+    )
+    quantiles = tuple(float(value) for value in bout_quantiles)
+    windows = tuple(int(value) for value in smooth_windows)
+    for quantile in quantiles:
+        if not 0.0 <= quantile <= 1.0:
+            raise ValueError("bout quantiles must be between 0 and 1.")
+    for window in windows:
+        if window < 1:
+            raise ValueError("smooth windows must be at least 1.")
+    for quantile in quantiles:
+        for window in windows:
+            vigor = moving_average(base_vigor, window) if window > 1 else base_vigor.copy()
+            threshold = float(np.quantile(vigor, quantile))
+            name = _target_variant_name(quantile, window)
+            if name in seen:
+                continue
+            variants.append(
+                BehaviorTargets(
+                    angle=np.asarray(targets.angle, dtype=float),
+                    vigor=vigor,
+                    bout_state=(vigor >= threshold).astype(int),
+                    bout_threshold=threshold,
+                    bout_quantile=quantile,
+                    smooth_window=window,
+                    target_variant=name,
+                    raw_vigor=base_vigor,
+                )
+            )
+            seen.add(name)
+    return tuple(variants)
+
+
+def _target_variant_name(bout_quantile: float, smooth_window: int) -> str:
+    quantile_text = f"{bout_quantile:g}".replace(".", "p")
+    return f"q{quantile_text}_sw{int(smooth_window)}"
 
 
 def bin_signal_to_frames(signal: np.ndarray, n_frames: int, reducer: str = "mean") -> np.ndarray:
@@ -287,97 +358,136 @@ def run_decoding_experiment(
     include_transfer: bool = True,
     include_null: bool = True,
     null_block_size: int = 60,
+    null_strategies: Iterable[str] = ("block_shuffle",),
+    target_variants: Sequence[BehaviorTargetVariant] | None = None,
     n_jobs: int = 1,
 ) -> DecodingResult:
     if not variants:
         raise ValueError("At least one trace variant is required.")
-    feature_map: dict[str, np.ndarray] = {}
-    aligned_y: np.ndarray | None = None
-    time_index: np.ndarray | None = None
-    for variant in variants:
-        design, y, times = make_lagged_design(variant.traces, target, lags, target_shift)
-        feature_map[variant.name] = design
-        if aligned_y is None:
-            aligned_y = y
-            time_index = times
-        elif not np.array_equal(aligned_y, y):
-            raise ValueError("Target alignment changed across variants.")
-    assert aligned_y is not None
-    assert time_index is not None
-
-    folds = list(blocked_folds(aligned_y.size, n_splits=n_splits, gap=gap))
-    jobs: list[dict[str, object]] = []
-    for variant in variants:
-        jobs.append(
-            {
-                "train_features": feature_map[variant.name],
-                "test_features": feature_map[variant.name],
-                "y": aligned_y,
-                "time_index": time_index,
-                "folds": folds,
-                "task": task,
-                "target_name": target_name,
-                "comparison": "within",
-                "train_version": variant.name,
-                "test_version": variant.name,
-                "ridge_alpha": ridge_alpha,
-            }
+    resolved_targets = (
+        tuple(target_variants)
+        if target_variants is not None
+        else (
+            BehaviorTargetVariant(
+                name="primary",
+                target=np.asarray(target),
+                bout_quantile=None,
+                smooth_window=None,
+            ),
         )
-
-    if include_transfer:
-        reference = variants[0].name
-        for variant in variants[1:]:
-            jobs.append(
-                {
-                    "train_features": feature_map[reference],
-                    "test_features": feature_map[variant.name],
-                    "y": aligned_y,
-                    "time_index": time_index,
-                    "folds": folds,
-                    "task": task,
-                    "target_name": target_name,
-                    "comparison": "transfer_raw_to_clean",
-                    "train_version": reference,
-                    "test_version": variant.name,
-                    "ridge_alpha": ridge_alpha,
-                }
-            )
-
-            jobs.append(
-                {
-                    "train_features": feature_map[variant.name],
-                    "test_features": feature_map[reference],
-                    "y": aligned_y,
-                    "time_index": time_index,
-                    "folds": folds,
-                    "task": task,
-                    "target_name": target_name,
-                    "comparison": "transfer_clean_to_raw",
-                    "train_version": variant.name,
-                    "test_version": reference,
-                    "ridge_alpha": ridge_alpha,
-                }
-            )
-
+    )
+    jobs: list[dict[str, object]] = []
+    null_strategy_names = tuple(str(strategy) for strategy in null_strategies)
     if include_null:
-        rng = np.random.default_rng(random_state)
-        null_y = block_shuffle(aligned_y, block_size=null_block_size, rng=rng)
+        _validate_null_strategies(null_strategy_names)
+    for target_variant in resolved_targets:
+        feature_map: dict[str, np.ndarray] = {}
+        aligned_y: np.ndarray | None = None
+        time_index: np.ndarray | None = None
+        for variant in variants:
+            design, y, times = make_lagged_design(
+                variant.traces, target_variant.target, lags, target_shift
+            )
+            feature_map[variant.name] = design
+            if aligned_y is None:
+                aligned_y = y
+                time_index = times
+            elif not np.array_equal(aligned_y, y):
+                raise ValueError("Target alignment changed across variants.")
+        assert aligned_y is not None
+        assert time_index is not None
+
+        folds = list(blocked_folds(aligned_y.size, n_splits=n_splits, gap=gap))
+        provenance = {
+            "target_variant": target_variant.name,
+            "bout_quantile": target_variant.bout_quantile,
+            "smooth_window": target_variant.smooth_window,
+        }
         for variant in variants:
             jobs.append(
                 {
                     "train_features": feature_map[variant.name],
                     "test_features": feature_map[variant.name],
-                    "y": null_y,
+                    "y": aligned_y,
                     "time_index": time_index,
                     "folds": folds,
                     "task": task,
                     "target_name": target_name,
-                    "comparison": "null_within",
+                    "comparison": "within",
                     "train_version": variant.name,
                     "test_version": variant.name,
                     "ridge_alpha": ridge_alpha,
+                    "target_provenance": provenance,
+                    "null_strategy": "observed",
                 }
             )
+
+        if include_transfer:
+            reference = variants[0].name
+            for variant in variants[1:]:
+                jobs.append(
+                    {
+                        "train_features": feature_map[reference],
+                        "test_features": feature_map[variant.name],
+                        "y": aligned_y,
+                        "time_index": time_index,
+                        "folds": folds,
+                        "task": task,
+                        "target_name": target_name,
+                        "comparison": "transfer_raw_to_clean",
+                        "train_version": reference,
+                        "test_version": variant.name,
+                        "ridge_alpha": ridge_alpha,
+                        "target_provenance": provenance,
+                        "null_strategy": "observed",
+                    }
+                )
+
+                jobs.append(
+                    {
+                        "train_features": feature_map[variant.name],
+                        "test_features": feature_map[reference],
+                        "y": aligned_y,
+                        "time_index": time_index,
+                        "folds": folds,
+                        "task": task,
+                        "target_name": target_name,
+                        "comparison": "transfer_clean_to_raw",
+                        "train_version": variant.name,
+                        "test_version": reference,
+                        "ridge_alpha": ridge_alpha,
+                        "target_provenance": provenance,
+                        "null_strategy": "observed",
+                    }
+                )
+
+        if include_null:
+            for null_strategy in null_strategy_names:
+                rng = np.random.default_rng(random_state)
+                null_y = make_null_target(
+                    aligned_y,
+                    strategy=null_strategy,
+                    block_size=null_block_size,
+                    rng=rng,
+                )
+                for variant in variants:
+                    jobs.append(
+                        {
+                            "train_features": feature_map[variant.name],
+                            "test_features": feature_map[variant.name],
+                            "y": null_y,
+                            "time_index": time_index,
+                            "folds": folds,
+                            "task": task,
+                            "target_name": target_name,
+                            "comparison": "null_within",
+                            "train_version": variant.name,
+                            "test_version": variant.name,
+                            "ridge_alpha": ridge_alpha,
+                            "target_provenance": provenance,
+                            "null_strategy": null_strategy,
+                        }
+                    )
 
     results = _run_evaluation_jobs(jobs, n_jobs=n_jobs)
     metric_rows: list[dict[str, object]] = []
@@ -437,6 +547,35 @@ def block_shuffle(y: np.ndarray, block_size: int, rng: np.random.Generator) -> n
     return np.concatenate([blocks[i] for i in order])
 
 
+def circular_shift(y: np.ndarray, rng: np.random.Generator) -> np.ndarray:
+    y = np.asarray(y)
+    if y.size < 2:
+        return y.copy()
+    shift = int(rng.integers(1, y.size))
+    return np.roll(y, shift)
+
+
+def make_null_target(
+    y: np.ndarray,
+    *,
+    strategy: str,
+    block_size: int,
+    rng: np.random.Generator,
+) -> np.ndarray:
+    if strategy == "block_shuffle":
+        return block_shuffle(y, block_size=block_size, rng=rng)
+    if strategy == "circular_shift":
+        return circular_shift(y, rng=rng)
+    raise ValueError(f"Unknown null strategy: {strategy}")
+
+
+def _validate_null_strategies(strategies: Sequence[str]) -> None:
+    valid = {"block_shuffle", "circular_shift"}
+    unknown = sorted(set(strategies) - valid)
+    if unknown:
+        raise ValueError(f"Unknown null strategy: {unknown[0]}")
+
+
 def _evaluate_pair(
     train_features: np.ndarray,
     test_features: np.ndarray,
@@ -449,6 +588,8 @@ def _evaluate_pair(
     train_version: str,
     test_version: str,
     ridge_alpha: float,
+    target_provenance: Mapping[str, object] | None = None,
+    null_strategy: str = "observed",
 ) -> tuple[list[dict[str, object]], list[pd.DataFrame]]:
     metric_rows: list[dict[str, object]] = []
     pred_rows: list[pd.DataFrame] = []
@@ -466,6 +607,10 @@ def _evaluate_pair(
 
         row = {
             "target": target_name,
+            "target_variant": "primary",
+            "bout_quantile": np.nan,
+            "smooth_window": np.nan,
+            "null_strategy": null_strategy,
             "task": task,
             "comparison": comparison,
             "train_version": train_version,
@@ -474,12 +619,18 @@ def _evaluate_pair(
             "n_train": int(train_idx.size),
             "n_test": int(test_idx.size),
         }
+        if target_provenance is not None:
+            row.update(target_provenance)
         row.update(metrics)
         metric_rows.append(row)
 
         fold_preds = pd.DataFrame(
             {
                 "target": target_name,
+                "target_variant": row["target_variant"],
+                "bout_quantile": row["bout_quantile"],
+                "smooth_window": row["smooth_window"],
+                "null_strategy": null_strategy,
                 "task": task,
                 "comparison": comparison,
                 "train_version": train_version,
@@ -579,7 +730,18 @@ def classification_metrics(
 
 
 def summarize_metrics(metrics: pd.DataFrame) -> pd.DataFrame:
-    id_cols = ["target", "task", "comparison", "train_version", "test_version"]
+    id_cols = [
+        "target",
+        "target_variant",
+        "bout_quantile",
+        "smooth_window",
+        "null_strategy",
+        "task",
+        "comparison",
+        "train_version",
+        "test_version",
+    ]
+    id_cols = [col for col in id_cols if col in metrics.columns]
     metric_cols = [
         col
         for col in metrics.columns

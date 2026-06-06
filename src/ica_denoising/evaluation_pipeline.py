@@ -20,6 +20,7 @@ from ica_denoising.behavior_decoding import (
     TraceVariant,
     classification_metrics,
     make_lagged_design,
+    moving_average,
     regression_metrics,
     standardize_train_test,
     summarize_trace_preservation,
@@ -27,7 +28,11 @@ from ica_denoising.behavior_decoding import (
 from ica_denoising.bss_notebook import DEFAULT_PCA_VARIANCE_THRESHOLD, resolve_bss_component_selection
 from ica_denoising.causal_behavior_decoding import CausalStateConfig, make_paired_windows, minimum_causal_gap
 from ica_denoising.core.ica_utils import bss_dec, rank_clusters_by_mean_log_psd
-from ica_denoising.evaluation_diagnostics import cluster_stability_table, temporal_dependence_diagnostics
+from ica_denoising.evaluation_diagnostics import (
+    cluster_stability_table,
+    pseudo_artifact_reconstruction_test,
+    temporal_dependence_diagnostics,
+)
 
 
 @dataclass(frozen=True)
@@ -151,15 +156,22 @@ class EvaluationConfig:
     decoder_target_shift: int = 0
     decoder_ridge_alpha: float = 10.0
     bout_quantile: float = 0.75
+    target_bout_quantiles: tuple[float, ...] = ()
+    target_smooth_windows: tuple[int, ...] = ()
     null_block_size: int = 60
     null_block_sizes: tuple[int, ...] = ()
     null_seeds: tuple[int, ...] = (0,)
+    null_strategies: tuple[str, ...] = ("block_shuffle",)
+    null_circular_min_shift: int = 60
     uncertainty_block_size: int = 60
     uncertainty_n_bootstrap: int = 2000
     uncertainty_n_permutations: int = 5000
     random_state: int = 0
     causal: CausalStateConfig = field(default_factory=CausalStateConfig)
     causal_transition_models: tuple[str, ...] = ()
+    causal_sufficiency_targets: tuple[str, ...] = ("vigor",)
+    artifact_probe_centers: tuple[int, ...] = ()
+    artifact_probe_half_width: int = 2
 
 
 @dataclass(frozen=True)
@@ -169,6 +181,8 @@ class EvaluationResult:
     behavior_predictions: pd.DataFrame
     causal_metrics: pd.DataFrame
     causal_embeddings: pd.DataFrame
+    causal_sufficiency: pd.DataFrame
+    artifact_probe_metrics: pd.DataFrame
     leakage_audit: pd.DataFrame
     component_selections: pd.DataFrame
     cluster_stability: pd.DataFrame
@@ -612,6 +626,8 @@ def run_evaluation(
     prediction_frames: list[pd.DataFrame] = []
     causal_rows: list[dict[str, object]] = []
     embedding_rows: list[dict[str, object]] = []
+    sufficiency_frames: list[pd.DataFrame] = []
+    artifact_probe_frames: list[pd.DataFrame] = []
     audit_rows: list[dict[str, object]] = []
     selection_rows: list[dict[str, object]] = []
     stability_frames: list[pd.DataFrame] = []
@@ -655,6 +671,12 @@ def run_evaluation(
         )
         causal_rows.extend(fold_causal)
         embedding_rows.extend(fold_embeddings)
+        sufficiency = _evaluate_causal_sufficiency_variants(variants, targets, fold, config)
+        if not sufficiency.empty:
+            sufficiency_frames.append(sufficiency)
+        artifact_probe = _evaluate_artifact_probe_variants(variants, fold, config)
+        if not artifact_probe.empty:
+            artifact_probe_frames.append(artifact_probe)
 
         test_variants = {
             variant.name: variant.traces[fold.test_idx]
@@ -686,6 +708,16 @@ def run_evaluation(
         ),
         causal_metrics=pd.DataFrame(causal_rows),
         causal_embeddings=pd.DataFrame(embedding_rows),
+        causal_sufficiency=(
+            pd.concat(sufficiency_frames, ignore_index=True)
+            if sufficiency_frames
+            else pd.DataFrame()
+        ),
+        artifact_probe_metrics=(
+            pd.concat(artifact_probe_frames, ignore_index=True)
+            if artifact_probe_frames
+            else pd.DataFrame()
+        ),
         leakage_audit=pd.DataFrame(audit_rows),
         component_selections=pd.DataFrame(selection_rows),
         cluster_stability=(
@@ -1106,51 +1138,37 @@ def _evaluate_behavior_variants(
 ) -> tuple[list[dict[str, object]], list[pd.DataFrame]]:
     rows: list[dict[str, object]] = []
     predictions: list[pd.DataFrame] = []
-    fold_threshold = float(np.quantile(targets.vigor[fold.train_idx], config.bout_quantile))
-    fold_targets = {
-        "tail_vigor": ("regression", targets.vigor),
-        "bout_state": ("classification", (targets.vigor >= fold_threshold).astype(int)),
-    }
-    designs: dict[tuple[str, str], tuple[np.ndarray, np.ndarray, np.ndarray]] = {}
-    for variant in variants:
-        for target_name, (_task, target) in fold_targets.items():
-            designs[(variant.name, target_name)] = make_lagged_design(
-                variant.traces,
-                target,
-                lags=config.decoder_lags,
-                target_shift=config.decoder_target_shift,
-            )
-
     raw = next(variant for variant in variants if variant.name == "raw")
-    for variant in variants:
-        for target_name, (task, _target) in fold_targets.items():
-            design, y, times = designs[(variant.name, target_name)]
-            train_mask, test_mask = _decoding_masks(times, fold, config)
-            metric_row, prediction = _evaluate_decoding_pair(
-                design,
-                design,
-                y,
-                times,
-                train_mask,
-                test_mask,
-                task=task,
-                target_name=target_name,
-                comparison="within",
-                train_version=variant.name,
-                test_version=variant.name,
-                fold=fold.fold,
-                ridge_alpha=config.decoder_ridge_alpha,
-            )
-            metric_row["bout_threshold"] = fold_threshold if task == "classification" else np.nan
-            rows.append(metric_row)
-            predictions.append(prediction)
 
-            if variant.name != raw.name:
-                raw_design, raw_y, raw_times = designs[(raw.name, target_name)]
-                if not np.array_equal(times, raw_times) or not np.array_equal(y, raw_y):
-                    raise ValueError("Raw and variant target alignment differs.")
-                transfer_row, transfer_prediction = _evaluate_decoding_pair(
-                    raw_design,
+    for target_variant, bout_quantile, smooth_window, vigor in _behavior_target_variants(
+        targets, config
+    ):
+        fold_threshold = float(np.quantile(vigor[fold.train_idx], bout_quantile))
+        fold_targets = {
+            "tail_vigor": ("regression", vigor),
+            "bout_state": ("classification", (vigor >= fold_threshold).astype(int)),
+        }
+        designs: dict[tuple[str, str], tuple[np.ndarray, np.ndarray, np.ndarray]] = {}
+        for variant in variants:
+            for target_name, (_task, target) in fold_targets.items():
+                designs[(variant.name, target_name)] = make_lagged_design(
+                    variant.traces,
+                    target,
+                    lags=config.decoder_lags,
+                    target_shift=config.decoder_target_shift,
+                )
+
+        metadata = {
+            "target_variant": target_variant,
+            "bout_quantile": float(bout_quantile),
+            "smooth_window": int(smooth_window),
+        }
+        for variant in variants:
+            for target_name, (task, _target) in fold_targets.items():
+                design, y, times = designs[(variant.name, target_name)]
+                train_mask, test_mask = _decoding_masks(times, fold, config)
+                metric_row, prediction = _evaluate_decoding_pair(
+                    design,
                     design,
                     y,
                     times,
@@ -1158,56 +1176,166 @@ def _evaluate_behavior_variants(
                     test_mask,
                     task=task,
                     target_name=target_name,
-                    comparison="transfer_raw_to_clean",
-                    train_version=raw.name,
+                    comparison="within",
+                    train_version=variant.name,
                     test_version=variant.name,
                     fold=fold.fold,
                     ridge_alpha=config.decoder_ridge_alpha,
                 )
-                transfer_row["bout_threshold"] = (
+                _annotate_behavior_outputs(metric_row, prediction, metadata)
+                metric_row["bout_threshold"] = (
                     fold_threshold if task == "classification" else np.nan
                 )
-                rows.append(transfer_row)
-                predictions.append(transfer_prediction)
-
-    for target_name, (task, _target) in fold_targets.items():
-        design, y, times = designs[(raw.name, target_name)]
-        train_mask, test_mask = _decoding_masks(times, fold, config)
-        for block_size in config.null_block_sizes or (config.null_block_size,):
-            for seed in config.null_seeds:
-                rng = np.random.default_rng(seed)
-                shuffled_train = _block_shuffle_with_time_gaps(
-                    y[train_mask],
-                    times[train_mask],
-                    block_size=int(block_size),
-                    rng=rng,
-                )
-                row, prediction = _evaluate_decoding_pair(
-                    design,
-                    design,
-                    y,
-                    times,
-                    train_mask,
-                    test_mask,
-                    task=task,
-                    target_name=target_name,
-                    comparison="null_within",
-                    train_version=raw.name,
-                    test_version=raw.name,
-                    fold=fold.fold,
-                    ridge_alpha=config.decoder_ridge_alpha,
-                    train_y_override=shuffled_train,
-                )
-                row["null_seed"] = int(seed)
-                row["null_block_size"] = int(block_size)
-                row["bout_threshold"] = (
-                    fold_threshold if task == "classification" else np.nan
-                )
-                prediction["null_seed"] = int(seed)
-                prediction["null_block_size"] = int(block_size)
-                rows.append(row)
+                rows.append(metric_row)
                 predictions.append(prediction)
+
+                if variant.name != raw.name:
+                    raw_design, raw_y, raw_times = designs[(raw.name, target_name)]
+                    if not np.array_equal(times, raw_times) or not np.array_equal(y, raw_y):
+                        raise ValueError("Raw and variant target alignment differs.")
+                    transfer_row, transfer_prediction = _evaluate_decoding_pair(
+                        raw_design,
+                        design,
+                        y,
+                        times,
+                        train_mask,
+                        test_mask,
+                        task=task,
+                        target_name=target_name,
+                        comparison="transfer_raw_to_clean",
+                        train_version=raw.name,
+                        test_version=variant.name,
+                        fold=fold.fold,
+                        ridge_alpha=config.decoder_ridge_alpha,
+                    )
+                    _annotate_behavior_outputs(transfer_row, transfer_prediction, metadata)
+                    transfer_row["bout_threshold"] = (
+                        fold_threshold if task == "classification" else np.nan
+                    )
+                    rows.append(transfer_row)
+                    predictions.append(transfer_prediction)
+
+        for target_name, (task, _target) in fold_targets.items():
+            design, y, times = designs[(raw.name, target_name)]
+            train_mask, test_mask = _decoding_masks(times, fold, config)
+            for null_strategy in config.null_strategies:
+                for block_size in config.null_block_sizes or (config.null_block_size,):
+                    for seed in config.null_seeds:
+                        rng = np.random.default_rng(seed)
+                        null_train = _null_train_values(
+                            y[train_mask],
+                            times[train_mask],
+                            strategy=null_strategy,
+                            block_size=int(block_size),
+                            min_shift=config.null_circular_min_shift,
+                            rng=rng,
+                        )
+                        row, prediction = _evaluate_decoding_pair(
+                            design,
+                            design,
+                            y,
+                            times,
+                            train_mask,
+                            test_mask,
+                            task=task,
+                            target_name=target_name,
+                            comparison="null_within",
+                            train_version=raw.name,
+                            test_version=raw.name,
+                            fold=fold.fold,
+                            ridge_alpha=config.decoder_ridge_alpha,
+                            train_y_override=null_train,
+                        )
+                        _annotate_behavior_outputs(row, prediction, metadata)
+                        row["null_seed"] = int(seed)
+                        row["null_block_size"] = int(block_size)
+                        row["null_strategy"] = null_strategy
+                        row["bout_threshold"] = (
+                            fold_threshold if task == "classification" else np.nan
+                        )
+                        prediction["null_seed"] = int(seed)
+                        prediction["null_block_size"] = int(block_size)
+                        prediction["null_strategy"] = null_strategy
+                        rows.append(row)
+                        predictions.append(prediction)
     return rows, predictions
+
+
+def _behavior_target_variants(
+    targets: BehaviorTargets,
+    config: EvaluationConfig,
+) -> tuple[tuple[str, float, int, np.ndarray], ...]:
+    """Return the primary target plus configured sensitivity targets."""
+    quantiles = (config.bout_quantile, *config.target_bout_quantiles)
+    windows = (1, *config.target_smooth_windows)
+    variants: list[tuple[str, float, int, np.ndarray]] = []
+    seen: set[tuple[float, int]] = set()
+    for quantile in quantiles:
+        if not 0.0 <= float(quantile) <= 1.0:
+            raise ValueError("target bout quantiles must be between 0 and 1.")
+        for window in windows:
+            window = int(window)
+            if window < 1:
+                raise ValueError("target smooth windows must be positive.")
+            key = (float(quantile), window)
+            if key in seen:
+                continue
+            seen.add(key)
+            name = "primary" if key == (float(config.bout_quantile), 1) else (
+                f"q{float(quantile):.3g}_smooth{window}"
+            )
+            vigor = targets.vigor if window == 1 else moving_average(targets.vigor, window)
+            variants.append((name, float(quantile), window, vigor))
+    return tuple(variants)
+
+
+def _annotate_behavior_outputs(
+    row: dict[str, object],
+    prediction: pd.DataFrame,
+    metadata: Mapping[str, object],
+) -> None:
+    for column, value in metadata.items():
+        row[column] = value
+        prediction[column] = value
+
+
+def _null_train_values(
+    y_train: np.ndarray,
+    times_train: np.ndarray,
+    *,
+    strategy: str,
+    block_size: int,
+    min_shift: int,
+    rng: np.random.Generator,
+) -> np.ndarray:
+    if strategy == "block_shuffle":
+        return _block_shuffle_with_time_gaps(
+            y_train,
+            times_train,
+            block_size=block_size,
+            rng=rng,
+        )
+    if strategy == "circular_shift":
+        return _circular_shift_train_values(y_train, min_shift=min_shift, rng=rng)
+    raise ValueError(f"Unknown null strategy: {strategy}")
+
+
+def _circular_shift_train_values(
+    y_train: np.ndarray,
+    *,
+    min_shift: int,
+    rng: np.random.Generator,
+) -> np.ndarray:
+    y_train = np.asarray(y_train)
+    if y_train.size < 2:
+        return y_train.copy()
+    min_shift = max(1, min(int(min_shift), y_train.size - 1))
+    if min_shift > y_train.size // 2:
+        shift = min_shift
+    else:
+        candidates = np.r_[min_shift : y_train.size - min_shift + 1]
+        shift = int(rng.choice(candidates))
+    return np.roll(y_train, shift)
 
 
 def _decoding_masks(
@@ -1428,6 +1556,129 @@ def _evaluate_causal_variants(
                     embedding[f"z{dim + 1}"] = float(z0_test[local_idx, dim])
                 embeddings.append(embedding)
     return rows, embeddings
+
+
+def _evaluate_causal_sufficiency_variants(
+    variants: Sequence[FoldVariant],
+    targets: BehaviorTargets,
+    fold: StrictFold,
+    config: EvaluationConfig,
+) -> pd.DataFrame:
+    rows: list[dict[str, object]] = []
+    causal = config.causal
+    target_names = config.causal_sufficiency_targets or ()
+    if not target_names:
+        return pd.DataFrame()
+    for variant in variants:
+        for shift in causal.target_shifts:
+            x0, _x1, target_map, times = make_paired_windows(
+                variant.traces, targets, causal, shift
+            )
+            train_mask, test_mask = _causal_masks(times, shift, fold, causal.window)
+            x0_flat = x0.reshape(x0.shape[0], -1)
+            x0_train, x0_test = standardize_train_test(
+                x0_flat[train_mask], x0_flat[test_mask]
+            )
+            latent_dim = min(causal.latent_dim, x0_train.shape[0], x0_train.shape[1])
+            pca = PCA(n_components=latent_dim, random_state=causal.random_state)
+            z_train = pca.fit_transform(x0_train)
+            z_test = pca.transform(x0_test)
+            augmented_train = np.hstack([z_train, x0_train])
+            augmented_test = np.hstack([z_test, x0_test])
+            for target_name in target_names:
+                if target_name not in target_map:
+                    raise ValueError(f"Unknown causal sufficiency target: {target_name}")
+                y_train = target_map[target_name][train_mask]
+                y_test = target_map[target_name][test_mask]
+                base = Ridge(alpha=causal.ridge_alpha)
+                base.fit(z_train, y_train)
+                base_pred = base.predict(z_test)
+                augmented = Ridge(alpha=causal.ridge_alpha)
+                augmented.fit(augmented_train, y_train)
+                augmented_pred = augmented.predict(augmented_test)
+                base_rmse = float(np.sqrt(mean_squared_error(y_test, base_pred)))
+                augmented_rmse = float(np.sqrt(mean_squared_error(y_test, augmented_pred)))
+                rows.append(
+                    {
+                        "variant": variant.name,
+                        "fold": int(fold.fold),
+                        "target_shift": int(shift),
+                        "target": target_name,
+                        "n_train": int(np.count_nonzero(train_mask)),
+                        "n_test": int(np.count_nonzero(test_mask)),
+                        "base_rmse": base_rmse,
+                        "augmented_rmse": augmented_rmse,
+                        "rmse_delta_aug_minus_base": augmented_rmse - base_rmse,
+                    }
+                )
+    return pd.DataFrame(rows)
+
+
+def _empty_artifact_probe_metrics() -> pd.DataFrame:
+    return pd.DataFrame(
+        columns=[
+            "fold",
+            "probe",
+            "artifact_center",
+            "local_center",
+            "half_width",
+            "variant",
+            "rmse",
+        ]
+    )
+
+
+def _evaluate_artifact_probe_variants(
+    variants: Sequence[FoldVariant],
+    fold: StrictFold,
+    config: EvaluationConfig,
+) -> pd.DataFrame:
+    if not config.artifact_probe_centers:
+        return _empty_artifact_probe_metrics()
+    half_width = int(config.artifact_probe_half_width)
+    if half_width < 1:
+        raise ValueError("artifact_probe_half_width must be at least 1.")
+    center_lookup = {int(frame): position for position, frame in enumerate(fold.test_idx)}
+    center_pairs = [
+        (int(center), int(center_lookup[int(center)]))
+        for center in config.artifact_probe_centers
+        if int(center) in center_lookup
+    ]
+    center_pairs = [
+        (global_center, local_center)
+        for global_center, local_center in center_pairs
+        if local_center - half_width >= 1
+        and local_center + half_width < fold.test_idx.size
+    ]
+    if not center_pairs:
+        return _empty_artifact_probe_metrics()
+    raw = next(variant for variant in variants if variant.name == "raw")
+    raw_test = raw.traces[fold.test_idx]
+    candidate_traces = {
+        variant.name: variant.traces[fold.test_idx]
+        for variant in variants
+        if variant.name != raw.name
+    }
+    rows = []
+    for global_center, local_center in center_pairs:
+        table = pseudo_artifact_reconstruction_test(
+            raw_test,
+            candidate_traces,
+            centers=(local_center,),
+            half_width=half_width,
+        )
+        if table.empty:
+            continue
+        table.insert(0, "fold", int(fold.fold))
+        table.insert(1, "probe", "pseudo_reconstruction")
+        table.insert(2, "artifact_center", int(global_center))
+        table = table.rename(columns={"center": "local_center"})
+        rows.append(table)
+    return (
+        pd.concat(rows, ignore_index=True).reindex(columns=_empty_artifact_probe_metrics().columns)
+        if rows
+        else _empty_artifact_probe_metrics()
+    )
 
 
 def _causal_masks(

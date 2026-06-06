@@ -44,9 +44,14 @@ STRICT_TUPLE_FIELDS = {
     "baseline_ranks",
     "lowpass_cutoffs_hz",
     "decoder_lags",
+    "target_bout_quantiles",
+    "target_smooth_windows",
     "null_block_sizes",
     "null_seeds",
+    "null_strategies",
     "causal_transition_models",
+    "causal_sufficiency_targets",
+    "artifact_probe_centers",
 }
 CAUSAL_TUPLE_FIELDS = {"target_shifts"}
 
@@ -117,6 +122,8 @@ def run_dataset_evaluation(
         "behavior_uncertainty": output_dir / "strict_behavior_block_uncertainty.csv",
         "causal_metrics": output_dir / "strict_causal_fold_metrics.csv",
         "causal_embeddings": output_dir / "strict_causal_oof_embeddings.csv",
+        "causal_sufficiency": output_dir / "strict_causal_sufficiency.csv",
+        "artifact_probe_metrics": output_dir / "strict_artifact_probe_metrics.csv",
         "causal_latent_correlations": output_dir
         / "strict_causal_oof_latent_behavior_correlations.csv",
         "leakage_audit": output_dir / "leakage_audit.csv",
@@ -142,6 +149,8 @@ def run_dataset_evaluation(
     behavior_uncertainty.to_csv(paths["behavior_uncertainty"], index=False)
     result.causal_metrics.to_csv(paths["causal_metrics"], index=False)
     result.causal_embeddings.to_csv(paths["causal_embeddings"], index=False)
+    result.causal_sufficiency.to_csv(paths["causal_sufficiency"], index=False)
+    result.artifact_probe_metrics.to_csv(paths["artifact_probe_metrics"], index=False)
     latent_correlations = compare_latent_graphs(result.causal_embeddings, lag=1)
     latent_correlations.to_csv(paths["causal_latent_correlations"], index=False)
     result.leakage_audit.to_csv(paths["leakage_audit"], index=False)
@@ -202,6 +211,8 @@ def run_dataset_evaluation(
                 "behavior_uncertainty": len(behavior_uncertainty),
                 "causal_metrics": len(result.causal_metrics),
                 "causal_embeddings": len(result.causal_embeddings),
+                "causal_sufficiency": len(result.causal_sufficiency),
+                "artifact_probe_metrics": len(result.artifact_probe_metrics),
                 "causal_latent_correlations": len(latent_correlations),
                 "leakage_audit": len(result.leakage_audit),
                 "component_selections": len(result.component_selections),
@@ -288,6 +299,8 @@ def write_recording_aggregate(
     behavior_frames = []
     uncertainty_frames = []
     causal_frames = []
+    causal_sufficiency_frames = []
+    artifact_probe_frames = []
     bpi_frames = []
     trace_frames = []
     for dataset_key, paths in completed.items():
@@ -304,8 +317,12 @@ def write_recording_aggregate(
             ("behavior_metrics", behavior_frames),
             ("behavior_uncertainty", uncertainty_frames),
             ("causal_metrics", causal_frames),
+            ("causal_sufficiency", causal_sufficiency_frames),
+            ("artifact_probe_metrics", artifact_probe_frames),
             ("bpi_ablation", bpi_frames),
         ):
+            if label not in paths:
+                continue
             table = pd.read_csv(paths[label])
             for column, value in reversed(metadata.items()):
                 if column in table:
@@ -317,12 +334,24 @@ def write_recording_aggregate(
     behavior = pd.concat(behavior_frames, ignore_index=True)
     uncertainty = pd.concat(uncertainty_frames, ignore_index=True)
     causal = pd.concat(causal_frames, ignore_index=True)
+    causal_sufficiency = (
+        pd.concat(causal_sufficiency_frames, ignore_index=True)
+        if causal_sufficiency_frames
+        else pd.DataFrame()
+    )
+    artifact_probe = (
+        pd.concat(artifact_probe_frames, ignore_index=True)
+        if artifact_probe_frames
+        else pd.DataFrame()
+    )
     bpi = pd.concat(bpi_frames, ignore_index=True)
     paths = {
         "trace": aggregate_dir / "recording_trace_preservation_metrics.csv",
         "behavior": aggregate_dir / "recording_behavior_fold_metrics.csv",
         "behavior_uncertainty": aggregate_dir / "recording_behavior_block_uncertainty.csv",
         "causal": aggregate_dir / "recording_causal_fold_metrics.csv",
+        "causal_sufficiency": aggregate_dir / "recording_causal_sufficiency.csv",
+        "artifact_probe": aggregate_dir / "recording_artifact_probe_metrics.csv",
         "bpi": aggregate_dir / "recording_bpi_ablation.csv",
         "primary_effects": aggregate_dir / "recording_primary_effects.csv",
         "fish_primary_effects": aggregate_dir / "fish_primary_effects.csv",
@@ -331,6 +360,8 @@ def write_recording_aggregate(
     behavior.to_csv(paths["behavior"], index=False)
     uncertainty.to_csv(paths["behavior_uncertainty"], index=False)
     causal.to_csv(paths["causal"], index=False)
+    causal_sufficiency.to_csv(paths["causal_sufficiency"], index=False)
+    artifact_probe.to_csv(paths["artifact_probe"], index=False)
     bpi.to_csv(paths["bpi"], index=False)
     _primary_unit_effects(behavior, causal, unit_col="recording").to_csv(
         paths["primary_effects"], index=False
@@ -414,6 +445,8 @@ def bpi_component_scores_from_behavior_metrics(
 ) -> pd.DataFrame:
     if metrics.empty:
         return pd.DataFrame()
+    if "target_variant" in metrics:
+        metrics = metrics[metrics["target_variant"] == "primary"]
     components = (
         (
             "tail_vigor_within",
