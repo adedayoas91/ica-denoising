@@ -28,6 +28,17 @@ class EvaluationRunnerTests(unittest.TestCase):
         self.assertEqual(config.target_smooth_windows, (3, 5))
         self.assertEqual(config.null_strategies, ("block_shuffle", "circular_shift"))
         self.assertEqual(config.causal_sufficiency_targets, ("vigor",))
+        self.assertEqual(
+            config.benchmark_latent_methods,
+            ("factor_analysis", "sparse_pca", "nmf"),
+        )
+        self.assertEqual(config.benchmark_latent_ranks, (10, 20, 40))
+        self.assertEqual(
+            config.ic_quality_selection_strategies,
+            ("ic_quality_nonartifact", "ic_quality_strict_keep"),
+        )
+        self.assertIsInstance(config.bss_component_counts, tuple)
+        self.assertIsInstance(config.bss_pca_variance_thresholds, tuple)
         self.assertIsNone(config.n_components)
         self.assertIsNone(config.bss_pca_components)
         self.assertEqual(config.bss_pca_variance_threshold, 0.95)

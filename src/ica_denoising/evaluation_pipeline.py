@@ -10,7 +10,7 @@ import numpy as np
 import pandas as pd
 from scipy.signal import butter, sosfilt, welch
 from sklearn.cluster import KMeans
-from sklearn.decomposition import PCA
+from sklearn.decomposition import FactorAnalysis, NMF, PCA, SparsePCA
 from sklearn.linear_model import LogisticRegression, Ridge
 from sklearn.metrics import balanced_accuracy_score, mean_squared_error, roc_auc_score
 from sklearn.neural_network import MLPRegressor
@@ -33,6 +33,8 @@ from ica_denoising.evaluation_diagnostics import (
     pseudo_artifact_reconstruction_test,
     temporal_dependence_diagnostics,
 )
+from ica_denoising.ic_quality.features import ICFeatureConfig, compute_ic_features
+from ica_denoising.ic_quality.scoring import score_ic_candidates
 
 
 @dataclass(frozen=True)
@@ -98,6 +100,31 @@ class FittedSubspaceModel:
 
 
 @dataclass(frozen=True)
+class FittedLatentBenchmarkModel:
+    name: str
+    rank: int
+    train_idx: np.ndarray
+    model: object
+    mean: np.ndarray | None = None
+    train_shift: np.ndarray | None = None
+
+    def reconstruct(self, traces: np.ndarray) -> np.ndarray:
+        traces = _validate_traces(traces)
+        if self.name == "factor_analysis":
+            transformed = self.model.transform(traces)
+            return transformed @ self.model.components_ + self.model.mean_
+        if self.name == "sparse_pca":
+            transformed = self.model.transform(traces - self.mean)
+            return transformed @ self.model.components_ + self.mean
+        if self.name == "nmf":
+            shifted = _apply_train_nonnegative_shift(traces, self.train_shift)
+            transformed = self.model.transform(shifted)
+            reconstructed = self.model.inverse_transform(transformed)
+            return reconstructed - self.train_shift
+        raise ValueError(f"Unknown latent benchmark model: {self.name}")
+
+
+@dataclass(frozen=True)
 class ClusterSelection:
     labels: np.ndarray
     spectra: np.ndarray
@@ -150,6 +177,11 @@ class EvaluationConfig:
     ranking_fmax_hz: float = 0.20
     ranking_aggregate: str = "peak"
     baseline_ranks: tuple[int, ...] = ()
+    benchmark_latent_methods: tuple[str, ...] = ()
+    benchmark_latent_ranks: tuple[int, ...] = ()
+    ic_quality_selection_strategies: tuple[str, ...] = ()
+    bss_component_counts: tuple[int, ...] = ()
+    bss_pca_variance_thresholds: tuple[float, ...] = ()
     include_energy_matched_pca: bool = True
     lowpass_cutoffs_hz: tuple[float, ...] = (0.20,)
     decoder_lags: tuple[int, ...] = (0, 1, 2)
@@ -331,6 +363,74 @@ def fit_subspace_model(
         basis=np.asarray(basis, dtype=float),
         train_idx=train_idx.copy(),
     )
+
+
+def fit_latent_benchmark_model(
+    traces: np.ndarray,
+    train_idx: Sequence[int],
+    *,
+    method: str,
+    rank: int,
+    random_state: int = 0,
+) -> FittedLatentBenchmarkModel:
+    traces = _validate_traces(traces)
+    train_idx = np.asarray(train_idx, dtype=int)
+    _validate_fit_indices(train_idx, traces.shape[0])
+    train = traces[train_idx]
+    rank = min(int(rank), *train.shape)
+    if rank < 1:
+        raise ValueError("rank must be at least 1.")
+    method = method.lower()
+    if method == "factor_analysis":
+        model = FactorAnalysis(n_components=rank, random_state=random_state)
+        model.fit(train)
+        return FittedLatentBenchmarkModel(method, rank, train_idx.copy(), model)
+    if method == "sparse_pca":
+        mean = train.mean(axis=0)
+        model = SparsePCA(
+            n_components=rank,
+            random_state=random_state,
+            max_iter=1000,
+            tol=1e-6,
+        )
+        model.fit(train - mean)
+        return FittedLatentBenchmarkModel(
+            method,
+            rank,
+            train_idx.copy(),
+            model,
+            mean=np.asarray(mean, dtype=float),
+        )
+    if method == "nmf":
+        train_shift = np.minimum(train.min(axis=0), 0.0)
+        shifted_train = _apply_train_nonnegative_shift(train, train_shift)
+        model = NMF(
+            n_components=rank,
+            init="nndsvda",
+            random_state=random_state,
+            max_iter=1000,
+        )
+        model.fit(shifted_train)
+        return FittedLatentBenchmarkModel(
+            method,
+            rank,
+            train_idx.copy(),
+            model,
+            train_shift=np.asarray(train_shift, dtype=float),
+        )
+    raise ValueError(
+        "benchmark latent method must be 'factor_analysis', 'sparse_pca', or 'nmf'."
+    )
+
+
+def _apply_train_nonnegative_shift(
+    traces: np.ndarray,
+    train_shift: np.ndarray | None,
+) -> np.ndarray:
+    if train_shift is None:
+        raise ValueError("train_shift is required for NMF reconstruction.")
+    shifted = _validate_traces(traces) - np.asarray(train_shift, dtype=float)
+    return np.clip(shifted, 0.0, None)
 
 
 def fit_pca_energy_models(
@@ -525,6 +625,43 @@ def select_components(
         raise ValueError(f"Unknown selection strategy: {strategy}")
     keep_clusters = set(int(value) for value in order[:keep_cluster_count])
     return np.flatnonzero(np.isin(selection.labels, list(keep_clusters)))
+
+
+def ic_quality_table_for_bss_model(
+    model: FittedBSSModel,
+    *,
+    sample_rate_hz: float,
+    nperseg: int,
+    noverlap: int,
+) -> pd.DataFrame:
+    features = compute_ic_features(
+        model.train_components,
+        model.mixing,
+        ICFeatureConfig(
+            sample_rate_hz=sample_rate_hz,
+            nperseg=nperseg,
+            noverlap=noverlap,
+        ),
+        behavior_targets=None,
+        method=model.method,
+    )
+    return score_ic_candidates(features)
+
+
+def select_components_by_ic_quality(
+    quality_table: pd.DataFrame,
+    *,
+    strategy: str,
+) -> np.ndarray:
+    if "component" not in quality_table.columns or "recommendation" not in quality_table.columns:
+        raise ValueError("quality_table must contain component and recommendation columns.")
+    if strategy == "ic_quality_nonartifact":
+        mask = quality_table["recommendation"].astype(str) != "drop"
+    elif strategy == "ic_quality_strict_keep":
+        mask = quality_table["recommendation"].astype(str) == "keep"
+    else:
+        raise ValueError(f"Unknown IC-quality selection strategy: {strategy}")
+    return np.sort(quality_table.loc[mask, "component"].astype(int).to_numpy())
 
 
 def run_cluster_stability_sweep(
@@ -853,14 +990,14 @@ def make_fold_variants(
     stability_assignment_frames: list[pd.DataFrame] = []
     energy_match_targets: dict[str, float] = {}
 
-    for method in config.bss_methods:
+    for method, bss_name, n_components, pca_variance_threshold in _bss_fit_specs(config):
         model = fit_bss_model(
             traces,
             fold.train_idx,
             method=method,
-            n_components=config.n_components,
+            n_components=n_components,
             pca_components=config.bss_pca_components,
-            pca_variance_threshold=config.bss_pca_variance_threshold,
+            pca_variance_threshold=pca_variance_threshold,
             tolerance=config.bss_tolerance,
             max_iter=config.bss_max_iter,
             random_state=config.random_state,
@@ -907,19 +1044,44 @@ def make_fold_variants(
         cluster_rank = {
             cluster: rank for rank, cluster in enumerate(selection.cluster_order, start=1)
         }
-        for component, cluster in enumerate(selection.labels):
-            selection_rows.append(
-                {
-                    "fold": fold.fold,
-                    "method": method,
-                    "component": component,
-                    "cluster": int(cluster),
-                    "cluster_rank": int(cluster_rank[int(cluster)]),
-                    "component_energy": float(selection.component_energy[component]),
-                }
+        quality_table = (
+            ic_quality_table_for_bss_model(
+                model,
+                sample_rate_hz=config.sample_rate_hz,
+                nperseg=config.welch_nperseg,
+                noverlap=config.welch_noverlap,
             )
+            if config.ic_quality_selection_strategies
+            else pd.DataFrame()
+        )
+        quality_by_component = (
+            quality_table.set_index("component")
+            if not quality_table.empty
+            else pd.DataFrame()
+        )
+        for component, cluster in enumerate(selection.labels):
+            row = {
+                "fold": fold.fold,
+                "method": bss_name,
+                "component": component,
+                "cluster": int(cluster),
+                "cluster_rank": int(cluster_rank[int(cluster)]),
+                "component_energy": float(selection.component_energy[component]),
+            }
+            if component in quality_by_component.index:
+                quality_row = quality_by_component.loc[component]
+                row.update(
+                    {
+                        "artifact_score": float(quality_row["artifact_score"]),
+                        "protect_score": float(quality_row["protect_score"]),
+                        "recommendation": str(quality_row["recommendation"]),
+                        "artifact_flags": str(quality_row["artifact_flags"]),
+                        "protect_flags": str(quality_row["protect_flags"]),
+                    }
+                )
+            selection_rows.append(row)
         decomposition_audit = _audit_row(
-            fold, method, "bss_decomposition", model.train_idx, False
+            fold, bss_name, "bss_decomposition", model.train_idx, False
         )
         decomposition_audit["fit_warning_count"] = len(model.fit_warnings)
         decomposition_audit["fit_warnings"] = " | ".join(model.fit_warnings)
@@ -936,11 +1098,15 @@ def make_fold_variants(
         audit_rows.extend(
             [
                 decomposition_audit,
-                _audit_row(fold, method, "component_psd", model.train_idx, False),
-                _audit_row(fold, method, "spectral_feature_clustering", model.train_idx, False),
-                _audit_row(fold, method, "component_selection", model.train_idx, False),
+                _audit_row(fold, bss_name, "component_psd", model.train_idx, False),
+                _audit_row(fold, bss_name, "spectral_feature_clustering", model.train_idx, False),
+                _audit_row(fold, bss_name, "component_selection", model.train_idx, False),
             ]
         )
+        if config.ic_quality_selection_strategies:
+            audit_rows.append(
+                _audit_row(fold, bss_name, "ic_quality_scoring", model.train_idx, False)
+            )
         for strategy in config.selection_strategies:
             cluster_counts: tuple[int | None, ...] = (
                 (None,) if strategy == "all" else tuple(config.keep_cluster_counts)
@@ -961,7 +1127,7 @@ def make_fold_variants(
                     suffix = "all" if keep_count is None else f"k{keep_count}"
                     if strategy in {"random", "energy_matched_random"}:
                         suffix = f"{suffix}/seed{seed}"
-                    name = f"{method}/{strategy}/{suffix}"
+                    name = f"{bss_name}/{strategy}/{suffix}"
                     variants.append(
                         FoldVariant(
                             name=name,
@@ -974,14 +1140,15 @@ def make_fold_variants(
                                 "pca_components": model.pca_components,
                                 "pca_variance_threshold": model.pca_variance_threshold,
                                 "pca_explained_variance_ratio": model.pca_explained_variance_ratio,
-                                "component_selection_mode": model.component_selection_mode,
-                                "strategy": strategy,
-                                "keep_cluster_count": keep_count,
-                                "keep_components": keep.tolist(),
-                                "random_state": seed,
-                            },
-                        )
-                    )
+                        "component_selection_mode": model.component_selection_mode,
+                        "strategy": strategy,
+                        "keep_cluster_count": keep_count,
+                        "keep_components": keep.tolist(),
+                        "fit_indices": "training_frames_only",
+                        "random_state": seed,
+                    },
+                )
+            )
                     audit_rows.append(
                         _audit_row(fold, name, "reconstruction", model.train_idx, False)
                     )
@@ -994,6 +1161,63 @@ def make_fold_variants(
                         )
                         denominator = float(np.sum((traces[model.train_idx] - model.mean) ** 2))
                         energy_match_targets[name] = _safe_ratio(numerator, denominator)
+
+        for strategy in config.ic_quality_selection_strategies:
+            keep = select_components_by_ic_quality(quality_table, strategy=strategy)
+            name = f"{bss_name}/{strategy}"
+            variants.append(
+                FoldVariant(
+                    name=name,
+                    family="bss",
+                    traces=model.reconstruct(traces, keep_components=keep),
+                    fit_idx=model.train_idx,
+                    metadata={
+                        "method": method,
+                        "n_components": model.n_components,
+                        "pca_components": model.pca_components,
+                        "pca_variance_threshold": model.pca_variance_threshold,
+                        "pca_explained_variance_ratio": model.pca_explained_variance_ratio,
+                        "component_selection_mode": model.component_selection_mode,
+                        "strategy": strategy,
+                        "keep_components": keep.tolist(),
+                        "selection_source": "ic_quality",
+                        "fit_indices": "training_frames_only",
+                    },
+                )
+            )
+            audit_rows.append(_audit_row(fold, name, "reconstruction", model.train_idx, False))
+
+    for method in config.benchmark_latent_methods:
+        for rank_value in config.benchmark_latent_ranks:
+            latent_model = fit_latent_benchmark_model(
+                traces,
+                fold.train_idx,
+                method=method,
+                rank=int(rank_value),
+                random_state=config.random_state,
+            )
+            name = f"{latent_model.name}/rank{latent_model.rank}"
+            metadata = {
+                "method": latent_model.name,
+                "rank": latent_model.rank,
+                "random_state": config.random_state,
+                "fit_indices": "training_frames_only",
+            }
+            if latent_model.train_shift is not None:
+                metadata["train_nonnegative_shift_min"] = float(latent_model.train_shift.min())
+                metadata["train_nonnegative_shift_max"] = float(latent_model.train_shift.max())
+            variants.append(
+                FoldVariant(
+                    name=name,
+                    family="latent_benchmark",
+                    traces=latent_model.reconstruct(traces),
+                    fit_idx=latent_model.train_idx,
+                    metadata=metadata,
+                )
+            )
+            audit_rows.append(
+                _audit_row(fold, name, "latent_fit_reconstruct", latent_model.train_idx, False)
+            )
 
     baseline_ranks = config.baseline_ranks or (min(traces.shape),)
     for rank_value in baseline_ranks:
@@ -1108,6 +1332,41 @@ def make_fold_variants(
         if stability_assignment_frames
         else pd.DataFrame(),
     )
+
+
+def _bss_fit_specs(
+    config: EvaluationConfig,
+) -> tuple[tuple[str, str, int | None, float | None], ...]:
+    specs: list[tuple[str, str, int | None, float | None]] = []
+    seen: set[tuple[str, int | None, float | None]] = set()
+    for method in config.bss_methods:
+        method = method.lower()
+        candidates: list[tuple[str, int | None, float | None]] = [
+            (method, config.n_components, config.bss_pca_variance_threshold)
+        ]
+        candidates.extend(
+            (
+                f"{method}/components{int(count)}",
+                int(count),
+                config.bss_pca_variance_threshold,
+            )
+            for count in config.bss_component_counts
+        )
+        candidates.extend(
+            (
+                f"{method}/pca_var{float(threshold):g}",
+                config.n_components,
+                float(threshold),
+            )
+            for threshold in config.bss_pca_variance_thresholds
+        )
+        for name, n_components, threshold in candidates:
+            key = (method, n_components, threshold)
+            if key in seen:
+                continue
+            seen.add(key)
+            specs.append((method, name, n_components, threshold))
+    return tuple(specs)
 
 
 def causal_lowpass_for_fold(

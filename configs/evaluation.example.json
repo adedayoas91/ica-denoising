@@ -86,6 +86,22 @@
   "baseline_ranks": [
     40
   ],
+  "benchmark_latent_methods": [
+    "factor_analysis",
+    "sparse_pca",
+    "nmf"
+  ],
+  "benchmark_latent_ranks": [
+    10,
+    20,
+    40
+  ],
+  "ic_quality_selection_strategies": [
+    "ic_quality_nonartifact",
+    "ic_quality_strict_keep"
+  ],
+  "bss_component_counts": [],
+  "bss_pca_variance_thresholds": [],
   "include_energy_matched_pca": true,
   "lowpass_cutoffs_hz": [
     0.1,
