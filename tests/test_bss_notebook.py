@@ -399,7 +399,26 @@ class BSSNotebookTests(unittest.TestCase):
             self.assertEqual(result.saved_paths["cleaned"].parent.name, "cleaned")
             np.testing.assert_allclose(result.cleaned, cleaned)
 
-    def test_sobi_and_jade_auto_select_pca_rank_from_variance_threshold(self) -> None:
+    def test_sobi_and_jade_use_full_rank_by_default(self) -> None:
+        rng = np.random.default_rng(11)
+        latent = rng.normal(size=(2, 120))
+        mixing = rng.normal(size=(8, 2))
+        traces = mixing @ latent + 0.01 * rng.normal(size=(8, 120))
+
+        fastica = resolve_bss_component_selection(traces, "fastica")
+        sobi = resolve_bss_component_selection(traces, "sobi")
+        jade = resolve_bss_component_selection(traces, "jade")
+
+        self.assertEqual(fastica.n_components, min(traces.shape))
+        self.assertIsNone(fastica.pca_components)
+        self.assertEqual(sobi.n_components, fastica.n_components)
+        self.assertEqual(jade.n_components, fastica.n_components)
+        self.assertIsNone(sobi.pca_components)
+        self.assertIsNone(jade.pca_components)
+        self.assertEqual(sobi.component_selection_mode, "full_trace_count")
+        self.assertEqual(jade.component_selection_mode, "full_trace_count")
+
+    def test_sobi_and_jade_can_select_pca_rank_from_variance_threshold(self) -> None:
         rng = np.random.default_rng(11)
         latent = rng.normal(size=(2, 120))
         mixing = rng.normal(size=(8, 2))

@@ -14,7 +14,7 @@ import pandas as pd
 
 BSS_METHODS = ("fastica", "infomax", "sobi", "jade")
 PCA_REDUCED_BSS_METHODS = {"sobi", "jade"}
-DEFAULT_PCA_VARIANCE_THRESHOLD = 0.95
+DEFAULT_PCA_VARIANCE_THRESHOLD: float | None = None
 
 
 @dataclass(frozen=True)
@@ -782,7 +782,7 @@ def choose_n_components(traces: np.ndarray, requested: int | None) -> int:
 
 def choose_pca_components_for_variance(
     traces: np.ndarray,
-    variance_threshold: float = DEFAULT_PCA_VARIANCE_THRESHOLD,
+    variance_threshold: float = 0.95,
 ) -> tuple[int, float]:
     """Return the smallest PCA rank explaining at least ``variance_threshold``."""
     ratios = pca_explained_variance_ratios(traces)

@@ -87,7 +87,27 @@ class EvaluationPipelineTests(unittest.TestCase):
         np.testing.assert_allclose(original_model.train_components, changed_model.train_components)
         self.assertEqual(np.intersect1d(original_model.train_idx, fold.test_idx).size, 0)
 
-    def test_strict_sobi_uses_variance_threshold_pca_rank_by_default(self) -> None:
+    def test_strict_sobi_uses_full_rank_by_default(self) -> None:
+        fold = make_strict_folds(180, n_splits=3, gap=5, required_gap=5)[1]
+
+        model = fit_bss_model(
+            self.traces,
+            fold.train_idx,
+            method="sobi",
+            n_components=None,
+            pca_components=None,
+            pca_variance_threshold=None,
+            max_iter=20,
+            random_state=3,
+        )
+
+        self.assertEqual(model.n_components, min(self.traces[fold.train_idx].shape))
+        self.assertIsNone(model.pca_components)
+        self.assertIsNone(model.pca_explained_variance_ratio)
+        self.assertEqual(model.component_selection_mode, "full_trace_count")
+        self.assertEqual(model.train_components.shape[1], model.n_components)
+
+    def test_strict_sobi_can_use_variance_threshold_pca_rank(self) -> None:
         fold = make_strict_folds(180, n_splits=3, gap=5, required_gap=5)[1]
 
         model = fit_bss_model(

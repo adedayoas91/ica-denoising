@@ -9,7 +9,7 @@
   ],
   "n_components": null,
   "bss_pca_components": null,
-  "bss_pca_variance_threshold": 0.95,
+  "bss_pca_variance_threshold": null,
   "bss_tolerance": 0.0001,
   "bss_max_iter": 500,
   "sobi_lags": [
