@@ -51,6 +51,39 @@ class BehaviorDecodingLoadTests(unittest.TestCase):
             self.assertEqual([variant.name for variant in variants], ["raw", "fastica/cleaned_fastica_demo_data"])
             np.testing.assert_allclose(variants[1].traces, (raw * 0.5).T)
 
+    def test_load_trace_variants_discovers_cluster_cleaned_variants(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            dataset_dir = root / "data"
+            dataset_dir.mkdir()
+            raw = np.arange(12, dtype=float).reshape(3, 4)
+            np.save(dataset_dir / "raw.npy", raw)
+
+            cleaned_root = root / "outputs" / "linear" / "demo" / "demo_data"
+            final_dir = cleaned_root / "fastica" / "cleaned"
+            variant_dir = cleaned_root / "fastica" / "cleaned_variants" / "cluster_keep_top_02" / "cleaned"
+            final_dir.mkdir(parents=True)
+            variant_dir.mkdir(parents=True)
+            np.save(final_dir / "cleaned_fastica_demo_data.npy", raw * 0.5)
+            np.save(variant_dir / "cleaned_fastica_demo_data.npy", raw * 0.25)
+
+            variants = load_trace_variants(
+                dataset_dir=dataset_dir,
+                raw_name="raw.npy",
+                cleaned_root=cleaned_root,
+                dataset_name="demo_data",
+            )
+
+            self.assertEqual(
+                [variant.name for variant in variants],
+                [
+                    "raw",
+                    "fastica/cleaned_fastica_demo_data",
+                    "fastica/keep_top_02/cleaned_fastica_demo_data",
+                ],
+            )
+            np.testing.assert_allclose(variants[2].traces, (raw * 0.25).T)
+
     def test_load_trace_variants_accepts_filtered_raw_override(self) -> None:
         with TemporaryDirectory() as tmp:
             root = Path(tmp)

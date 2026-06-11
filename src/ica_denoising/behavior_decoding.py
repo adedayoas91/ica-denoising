@@ -75,6 +75,7 @@ def load_trace_variants(
     When ``cleaned_root`` is provided, cleaned traces are discovered using the
     method hierarchy ``<cleaned_root>/<method>/cleaned/<cleaned_glob>``, the
     incremental hierarchy ``<cleaned_root>/<method>/incremental/<selection_id>/cleaned/<cleaned_glob>``,
+    cleaned-variant hierarchy ``<cleaned_root>/<method>/cleaned_variants/<selection_id>/cleaned/<cleaned_glob>``,
     and fallbacks for earlier method-root and method/dataset layouts.
     """
     dataset_dir = Path(dataset_dir)
@@ -97,6 +98,7 @@ def load_trace_variants(
         cleaned_paths_set: set[Path] = set()
         for pattern in (
             f"{method_glob}/incremental/*/cleaned/{cleaned_glob}",
+            f"{method_glob}/cleaned_variants/*/cleaned/{cleaned_glob}",
             f"{method_glob}/cleaned/{cleaned_glob}",
             f"{method_glob}/{cleaned_glob}",
             f"{method_glob}/{resolved_dataset_name}/{cleaned_glob}",
@@ -148,6 +150,13 @@ def _infer_variant_name_from_cleaned_path(
     if len(rel_parts) >= 5 and rel_parts[1] == "incremental" and rel_parts[-2] == "cleaned":
         method_name = rel_parts[0]
         selection_id = rel_parts[2]
+        return f"{method_name}/{selection_id}/{stem}"
+
+    # Cleaned-variant layout:
+    # <method>/cleaned_variants/<selection_id>/cleaned/<cleaned_file>.npy
+    if len(rel_parts) >= 5 and rel_parts[1] == "cleaned_variants" and rel_parts[-2] == "cleaned":
+        method_name = rel_parts[0]
+        selection_id = rel_parts[2].removeprefix("cluster_")
         return f"{method_name}/{selection_id}/{stem}"
 
     # Canonical layout:

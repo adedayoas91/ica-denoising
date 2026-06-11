@@ -570,10 +570,16 @@ def behavior_prediction_uncertainty(
     missing = sorted(required - set(predictions.columns))
     if missing:
         raise ValueError(f"predictions is missing required columns: {missing}")
+    context_columns = [
+        column
+        for column in ("target_variant", "bout_quantile", "smooth_window", "null_strategy")
+        if column in predictions.columns
+    ]
+    join_columns = ["target", "task", *context_columns, "fold", "time_index"]
     reference = predictions[
         (predictions["comparison"] == "within")
         & (predictions["test_version"] == "raw")
-    ][["target", "task", "fold", "time_index", "y_true", "y_pred"]].rename(
+    ][[*join_columns, "y_true", "y_pred"]].rename(
         columns={"y_pred": "reference_prediction"}
     )
     candidates = predictions[
@@ -586,7 +592,7 @@ def behavior_prediction_uncertainty(
     ):
         paired = group.merge(
             reference,
-            on=["target", "task", "fold", "time_index"],
+            on=join_columns,
             suffixes=("", "_reference"),
             validate="one_to_one",
         )

@@ -87,6 +87,57 @@ class EvaluationRunnerTests(unittest.TestCase):
         self.assertAlmostEqual(float(table["effect"].iloc[0]), 1.0)
         self.assertGreaterEqual(float(table["ci_low"].iloc[0]), 1.0)
 
+    def test_behavior_uncertainty_preserves_target_variant_pairing(self) -> None:
+        rows = []
+        for target_variant in ("primary", "q0p65_sw3"):
+            for time_index in range(5):
+                rows.extend(
+                    [
+                        {
+                            "target": "tail_vigor",
+                            "target_variant": target_variant,
+                            "bout_quantile": 0.75 if target_variant == "primary" else 0.65,
+                            "smooth_window": 1 if target_variant == "primary" else 3,
+                            "null_strategy": "observed",
+                            "task": "regression",
+                            "comparison": "within",
+                            "train_version": "raw",
+                            "test_version": "raw",
+                            "fold": 0,
+                            "time_index": time_index,
+                            "y_true": float(time_index),
+                            "y_pred": float(time_index + 1),
+                        },
+                        {
+                            "target": "tail_vigor",
+                            "target_variant": target_variant,
+                            "bout_quantile": 0.75 if target_variant == "primary" else 0.65,
+                            "smooth_window": 1 if target_variant == "primary" else 3,
+                            "null_strategy": "observed",
+                            "task": "regression",
+                            "comparison": "transfer_raw_to_clean",
+                            "train_version": "raw",
+                            "test_version": "clean",
+                            "fold": 0,
+                            "time_index": time_index,
+                            "y_true": float(time_index),
+                            "y_pred": float(time_index + 0.5),
+                        },
+                    ]
+                )
+
+        table = behavior_prediction_uncertainty(
+            pd.DataFrame(rows),
+            block_size=2,
+            n_bootstrap=100,
+            n_permutations=100,
+            random_state=0,
+        )
+
+        self.assertEqual(len(table), 1)
+        self.assertEqual(table["method"].iloc[0], "clean")
+        self.assertEqual(int(table["n_predictions"].iloc[0]), 10)
+
     def test_recording_aggregate_overwrites_existing_identity_columns(self) -> None:
         with TemporaryDirectory() as tmp:
             root = Path(tmp)
