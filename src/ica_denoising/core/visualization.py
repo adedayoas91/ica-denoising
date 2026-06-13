@@ -47,14 +47,24 @@ def plot_FT_spectrals(ICs, f_s, n_comps):
                 nperseg=250,
                 noverlap=overlap,
             )
-            ax[i, 1].plot(freqs, power, label="overlap = {}".format(overlap), alpha=0.75)
+            ax[i, 1].plot(
+                freqs, power, label="overlap = {}".format(overlap), alpha=0.75
+            )
             ax[i, 1].set_title("Welch spectrum {}".format(i))
             ax[i, 1].grid()
             ax[i, 1].legend()
     plt.tight_layout()
 
 
-def plot_clusters(new_mat, predictions, rotate=False, elev=22, azim_start=45, azim_end=405, interval=60):  # ,centers
+def plot_clusters(
+    new_mat,
+    predictions,
+    rotate=False,
+    elev=22,
+    azim_start=45,
+    azim_end=405,
+    interval=60,
+):  # ,centers
     fig = plt.figure(figsize=(6, 6))
     ax = fig.add_subplot(111, projection="3d")
 
@@ -101,7 +111,10 @@ def plottings_spectrals(IC_ft, n_clus, alll, f_s):
     for i in range(n_clus):
         group = IC_ft[np.where(alll[:, 3] == i)]
         for j in range(group.shape[0]):
-            ax[i].plot(np.fft.fftshift(np.linspace(-f_s / 2, f_s / 2, IC_ft.shape[1])), group[j, :])
+            ax[i].plot(
+                np.fft.fftshift(np.linspace(-f_s / 2, f_s / 2, IC_ft.shape[1])),
+                group[j, :],
+            )
         ax[i].plot(
             np.fft.fftshift(np.linspace(-f_s / 2, f_s / 2, IC_ft.shape[1])),
             group.mean(0),
@@ -152,6 +165,9 @@ def plottings_group_spectrals(IC_ft, n_clus, alll, f_s):
     for i in range(n_clus):
         group = IC_ft[np.where(alll[:, 4] == i)]
         for j in range(group.shape[0]):
-            ax[i].plot(np.fft.fftshift(np.linspace(-f_s / 2, f_s / 2, IC_ft.shape[1])), group[j, :])
+            ax[i].plot(
+                np.fft.fftshift(np.linspace(-f_s / 2, f_s / 2, IC_ft.shape[1])),
+                group[j, :],
+            )
         ax[i].set_xlim([0, 3])
         ax[i].set_title("cl {} with {}".format(i, group.shape[0]))

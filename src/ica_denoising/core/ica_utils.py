@@ -2,6 +2,7 @@
 # coding: utf-8
 
 import numpy as np
+
 # from utils import *
 import matplotlib.pyplot as plt
 from sklearn.decomposition import FastICA, PCA
@@ -10,18 +11,24 @@ from sklearn.cluster import KMeans
 from .visualization import plot_clusters, plottings_spectrals
 
 
-def eig_dec(data,var_to_keep):
+def eig_dec(data, var_to_keep):
     cov = np.cov(data)
-    eig_values,eig_vectors = np.linalg.eig(cov)
+    eig_values, eig_vectors = np.linalg.eig(cov)
     var = 0
     i = 1
-    while var<var_to_keep:
-        var= np.sum(eig_values[:i])/np.sum(eig_values)
-        i+=1
-    plt.stem(np.arange(len(eig_values)),eig_values)
-    plt.vlines(i,0,eig_values.max(),label='{} eig_vals = {}'.format(i,np.sum(eig_values[:i])/np.sum(eig_values)),color='r')
+    while var < var_to_keep:
+        var = np.sum(eig_values[:i]) / np.sum(eig_values)
+        i += 1
+    plt.stem(np.arange(len(eig_values)), eig_values)
+    plt.vlines(
+        i,
+        0,
+        eig_values.max(),
+        label="{} eig_vals = {}".format(i, np.sum(eig_values[:i]) / np.sum(eig_values)),
+        color="r",
+    )
     plt.legend()
-    plt.title('Eigen values')
+    plt.title("Eigen values")
     return i
 
 
@@ -36,10 +43,10 @@ def ica_dec(data, n_comps, t, max_, random_state=0):
     ic_comps = ica.fit_transform(data.T)
     A = ica.mixing_
     mean = ica.mean_
-    IC_ft = np.zeros((n_comps,data.shape[1]))
+    IC_ft = np.zeros((n_comps, data.shape[1]))
     for i in range(n_comps):
-        IC_ft[i,:] = np.abs(np.fft.fft(ic_comps[:,i]))
-    return ic_comps,IC_ft,A,mean
+        IC_ft[i, :] = np.abs(np.fft.fft(ic_comps[:, i]))
+    return ic_comps, IC_ft, A, mean
 
 
 def bss_dec(
@@ -225,13 +232,23 @@ def accepted_to_rejected(accepted_components, n_total_components):
         return []
     n_total_components = int(n_total_components)
     accepted = sorted({int(component) for component in accepted_components})
-    invalid = [component for component in accepted if component < 0 or component >= n_total_components]
+    invalid = [
+        component
+        for component in accepted
+        if component < 0 or component >= n_total_components
+    ]
     if invalid:
         raise ValueError(f"Accepted component indices out of range: {invalid}")
-    return [component for component in range(n_total_components) if component not in accepted]
+    return [
+        component
+        for component in range(n_total_components)
+        if component not in accepted
+    ]
 
 
-def reject_components_from_cluster_selection(predictions, *, reject_clusters=(), keep_clusters=()):
+def reject_components_from_cluster_selection(
+    predictions, *, reject_clusters=(), keep_clusters=()
+):
     """Convert cluster label selections into component indices to reject."""
     predictions = np.asarray(predictions)
     reject_clusters = list(reject_clusters)
@@ -249,7 +266,9 @@ def _prepare_whitened_data(data, n_comps):
     X = np.asarray(data, dtype=float).T
     n_comps = int(n_comps)
     if n_comps < 1 or n_comps > min(X.shape):
-        raise ValueError(f"n_comps must be between 1 and {min(X.shape)}, got {n_comps}.")
+        raise ValueError(
+            f"n_comps must be between 1 and {min(X.shape)}, got {n_comps}."
+        )
     mean = X.mean(axis=0)
     X_centered = X - mean
     pca = PCA(n_components=n_comps, whiten=True, svd_solver="full")
@@ -358,7 +377,9 @@ def _jade_cumulant_matrices(X_white, max_cumulant_matrices):
 def _joint_diag_symmetric(mats, tol=0.0001, max_iter=500):
     mats = np.asarray(mats, dtype=float).copy()
     if mats.ndim != 3 or mats.shape[1] != mats.shape[2]:
-        raise ValueError("mats must have shape (n_matrices, n_components, n_components).")
+        raise ValueError(
+            "mats must have shape (n_matrices, n_components, n_components)."
+        )
     n_comps = mats.shape[1]
     rotation = np.eye(n_comps)
     for _ in range(max_iter):
@@ -475,7 +496,9 @@ def cluster(
     n_pca_components = min(3, features.shape[0], features.shape[1])
     new_mat = PCA(n_components=n_pca_components).fit_transform(features)
     if n_pca_components < 3:
-        new_mat = np.pad(new_mat, ((0, 0), (0, 3 - n_pca_components)), constant_values=0.0)
+        new_mat = np.pad(
+            new_mat, ((0, 0), (0, 3 - n_pca_components)), constant_values=0.0
+        )
 
     return new_mat, predictions, spectra, features
 
@@ -505,7 +528,9 @@ def plot_mean_log_psd_by_cluster(
     spectra = np.asarray(spectra, dtype=float)
     predictions = np.asarray(predictions)
     if spectra.ndim != 2:
-        raise ValueError(f"spectra must have shape (n_components, n_freq_bins), got {spectra.shape}.")
+        raise ValueError(
+            f"spectra must have shape (n_components, n_freq_bins), got {spectra.shape}."
+        )
     if predictions.ndim != 1 or predictions.shape[0] != spectra.shape[0]:
         raise ValueError(
             "predictions must be 1D with one label per component: "
@@ -517,23 +542,31 @@ def plot_mean_log_psd_by_cluster(
     eps = np.finfo(float).eps
     freqs = np.linspace(0.0, float(sample_rate_hz) / 2.0, spectra.shape[1])
 
-    fig, ax = plt.subplots(1, n_clusters + 1, figsize=(4.5 * (n_clusters + 1), 3.2), squeeze=False)
+    fig, ax = plt.subplots(
+        1, n_clusters + 1, figsize=(4.5 * (n_clusters + 1), 3.2), squeeze=False
+    )
     axes = ax[0]
     for panel_idx, cluster_label in enumerate(unique_labels):
         group = spectra[predictions == cluster_label]
         if show_individual:
             for row in group:
-                axes[panel_idx].plot(freqs, np.log(np.maximum(row, eps)), lw=0.8, alpha=0.45)
+                axes[panel_idx].plot(
+                    freqs, np.log(np.maximum(row, eps)), lw=0.8, alpha=0.45
+                )
         mean_log = np.log(np.maximum(group.mean(axis=0), eps))
         axes[panel_idx].plot(freqs, mean_log, color="black", lw=1.5, label="mean log")
         axes[panel_idx].set_xlim(list(xlim))
         axes[panel_idx].set_ylim(list(per_cluster_ylim))
-        axes[panel_idx].set_title(f"{title_prefix} {int(cluster_label)}, {group.shape[0]}")
+        axes[panel_idx].set_title(
+            f"{title_prefix} {int(cluster_label)}, {group.shape[0]}"
+        )
         axes[panel_idx].set_xlabel("Frequency (Hz)")
         axes[panel_idx].set_ylabel("Log PSD")
         axes[panel_idx].legend(loc="best")
 
-        axes[n_clusters].plot(freqs, mean_log, lw=1.2, label=f"clus {int(cluster_label)}")
+        axes[n_clusters].plot(
+            freqs, mean_log, lw=1.2, label=f"clus {int(cluster_label)}"
+        )
 
     axes[n_clusters].set_xlim(list(xlim))
     axes[n_clusters].set_ylim(list(overlay_ylim))
@@ -578,7 +611,9 @@ def rank_clusters_by_mean_log_psd(
     spectra = np.asarray(spectra, dtype=float)
     predictions = np.asarray(predictions)
     if spectra.ndim != 2:
-        raise ValueError(f"spectra must have shape (n_components, n_freq_bins), got {spectra.shape}.")
+        raise ValueError(
+            f"spectra must have shape (n_components, n_freq_bins), got {spectra.shape}."
+        )
     if predictions.ndim != 1 or predictions.shape[0] != spectra.shape[0]:
         raise ValueError(
             "predictions must be 1D with one label per component: "
@@ -622,14 +657,14 @@ def rank_clusters_by_mean_log_psd(
 
 
 # proceed function without returning the individuals results
-def compute(traces,n_clus,f_s):
+def compute(traces, n_clus, f_s):
     """Deprecated legacy demo workflow; see ``src/DELETION_CANDIDATES.md``."""
 
     a = eig_dec(traces)
-    ic_comps, IC_ft,A,mean = ica_dec(traces,a,t=0.0001,max_=500)
-    new_mat, predictions, spectra, _ = cluster(ic_comps,n_clus,f_s)
-    al = np.c_[new_mat.round(1),predictions.round(1)]
-    plot_clusters(new_mat,predictions)
+    ic_comps, IC_ft, A, mean = ica_dec(traces, a, t=0.0001, max_=500)
+    new_mat, predictions, spectra, _ = cluster(ic_comps, n_clus, f_s)
+    al = np.c_[new_mat.round(1), predictions.round(1)]
+    plot_clusters(new_mat, predictions)
     plottings_spectrals(IC_ft, n_clus, al, f_s)
     # Keep existing mean-log spectral behavior, but from PSDs used for clustering.
     plot_mean_log_psd_by_cluster(spectra, predictions, f_s)

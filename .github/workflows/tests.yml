@@ -2,7 +2,7 @@ name: tests
 
 on:
   push:
-    branches: [main]
+    branches: [main, dev, "integration/**"]
   pull_request:
 
 permissions:
@@ -28,6 +28,9 @@ jobs:
 
       - name: Ruff lint
         run: uvx ruff@0.12.7 check src tests
+
+      - name: Ruff format check
+        run: uvx ruff@0.12.7 format --check src tests
 
   test:
     name: pytest (Python ${{ matrix.python-version }})

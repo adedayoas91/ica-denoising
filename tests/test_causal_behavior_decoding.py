@@ -27,7 +27,9 @@ class CausalBehaviorDecodingTests(unittest.TestCase):
         traces[:, 0] = np.sin(2 * np.pi * t / 20.0)
         traces[:, 1] = np.cos(2 * np.pi * t / 30.0)
         traces[:, 2] = np.sin(2 * np.pi * t / 12.0)
-        traces[:, 3] = 0.3 * traces[:, 0] + 0.4 * traces[:, 1] + rng.normal(0, 0.08, frames)
+        traces[:, 3] = (
+            0.3 * traces[:, 0] + 0.4 * traces[:, 1] + rng.normal(0, 0.08, frames)
+        )
         traces[:, 4] = rng.normal(0, 0.1, frames)
         traces[:, 5] = 0.5 * traces[:, 2] + rng.normal(0, 0.06, frames)
 
@@ -46,8 +48,12 @@ class CausalBehaviorDecodingTests(unittest.TestCase):
         self.clean_variant = TraceVariant("clean", Path("clean.npy"), traces * 0.98)
 
     def test_make_paired_windows_shapes(self) -> None:
-        cfg = CausalStateConfig(window=8, target_shifts=(0,), latent_dim=2, n_splits=3, gap=2)
-        x0, x1, ymap, times = make_paired_windows(self.raw_variant.traces, self.targets, cfg, target_shift=2)
+        cfg = CausalStateConfig(
+            window=8, target_shifts=(0,), latent_dim=2, n_splits=3, gap=2
+        )
+        x0, x1, ymap, times = make_paired_windows(
+            self.raw_variant.traces, self.targets, cfg, target_shift=2
+        )
         self.assertEqual(x0.shape[1], 7)
         self.assertEqual(x1.shape, x0.shape)
         self.assertEqual(x0.shape[0], len(times))
@@ -56,8 +62,17 @@ class CausalBehaviorDecodingTests(unittest.TestCase):
         self.assertEqual(len(ymap["bout_state"]), len(times))
 
     def test_fit_causal_state_model_outputs_tables(self) -> None:
-        cfg = CausalStateConfig(window=10, target_shifts=(0, 1), latent_dim=3, n_splits=4, gap=9, random_state=1)
-        result = fit_causal_state_model([self.raw_variant, self.clean_variant], self.targets, cfg)
+        cfg = CausalStateConfig(
+            window=10,
+            target_shifts=(0, 1),
+            latent_dim=3,
+            n_splits=4,
+            gap=9,
+            random_state=1,
+        )
+        result = fit_causal_state_model(
+            [self.raw_variant, self.clean_variant], self.targets, cfg
+        )
         self.assertFalse(result.fold_metrics.empty)
         self.assertFalse(result.embeddings.empty)
         self.assertFalse(result.residual_tests.empty)
@@ -78,14 +93,20 @@ class CausalBehaviorDecodingTests(unittest.TestCase):
         self.assertIn("fold", result.graph_metrics.columns)
 
     def test_fit_causal_state_model_rejects_overlapping_history_gap(self) -> None:
-        cfg = CausalStateConfig(window=10, target_shifts=(0,), latent_dim=2, n_splits=3, gap=2)
+        cfg = CausalStateConfig(
+            window=10, target_shifts=(0,), latent_dim=2, n_splits=3, gap=2
+        )
         self.assertEqual(minimum_causal_gap(cfg), 9)
         with self.assertRaisesRegex(ValueError, "too small"):
             fit_causal_state_model([self.raw_variant], self.targets, cfg)
 
     def test_markov_sufficiency_returns_fold_rows(self) -> None:
-        cfg = CausalStateConfig(window=9, target_shifts=(0,), latent_dim=2, n_splits=3, gap=1)
-        x0, _x1, ymap, _times = make_paired_windows(self.raw_variant.traces, self.targets, cfg, target_shift=0)
+        cfg = CausalStateConfig(
+            window=9, target_shifts=(0,), latent_dim=2, n_splits=3, gap=1
+        )
+        x0, _x1, ymap, _times = make_paired_windows(
+            self.raw_variant.traces, self.targets, cfg, target_shift=0
+        )
         x0_flat = x0.reshape(x0.shape[0], -1)
         z = x0_flat[:, :2]
         from ica_denoising.behavior_decoding import blocked_folds
