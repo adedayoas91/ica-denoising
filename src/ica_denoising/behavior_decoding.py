@@ -61,6 +61,13 @@ class AnalysisScorecard:
     scorecard: pd.DataFrame
 
 
+_BOUT_THRESHOLD_OVERRIDES = {
+    None,
+    "positive_vigor_quantile",
+    "strict_zero_threshold",
+}
+
+
 def load_trace_variants(
     dataset_dir: Path,
     raw_name: str = "fluo_signals_no_NaN.npy",
@@ -222,6 +229,7 @@ def make_behavior_targets(
     n_frames: int,
     bout_quantile: float = 0.75,
     smooth_window: int = 3,
+    bout_threshold_override: str | None = None,
 ) -> BehaviorTargets:
     tail_angle = np.asarray(tail_angle, dtype=float).reshape(-1)
     if tail_angle.size < n_frames:
@@ -234,8 +242,11 @@ def make_behavior_targets(
     raw_vigor = vigor.copy()
     if smooth_window > 1:
         vigor = moving_average(vigor, smooth_window)
-    threshold = float(np.quantile(vigor, bout_quantile))
-    bout_state = (vigor >= threshold).astype(int)
+    threshold, bout_state = _compute_bout_threshold_and_state(
+        vigor,
+        bout_quantile,
+        bout_threshold_override=bout_threshold_override,
+    )
     return BehaviorTargets(
         angle=angle,
         vigor=vigor,
@@ -252,6 +263,7 @@ def make_behavior_target_variants(
     *,
     bout_quantiles: Iterable[float] = (),
     smooth_windows: Iterable[int] = (),
+    bout_threshold_override: str | None = None,
 ) -> tuple[BehaviorTargets, ...]:
     """Return the primary behavior target plus configured vigor/bout variants."""
     variants = [targets]
@@ -272,7 +284,11 @@ def make_behavior_target_variants(
     for quantile in quantiles:
         for window in windows:
             vigor = moving_average(base_vigor, window) if window > 1 else base_vigor.copy()
-            threshold = float(np.quantile(vigor, quantile))
+            threshold, bout_state = _compute_bout_threshold_and_state(
+                vigor,
+                quantile,
+                bout_threshold_override=bout_threshold_override,
+            )
             name = _target_variant_name(quantile, window)
             if name in seen:
                 continue
@@ -280,7 +296,7 @@ def make_behavior_target_variants(
                 BehaviorTargets(
                     angle=np.asarray(targets.angle, dtype=float),
                     vigor=vigor,
-                    bout_state=(vigor >= threshold).astype(int),
+                    bout_state=bout_state,
                     bout_threshold=threshold,
                     bout_quantile=quantile,
                     smooth_window=window,
@@ -295,6 +311,29 @@ def make_behavior_target_variants(
 def _target_variant_name(bout_quantile: float, smooth_window: int) -> str:
     quantile_text = f"{bout_quantile:g}".replace(".", "p")
     return f"q{quantile_text}_sw{int(smooth_window)}"
+
+
+def _compute_bout_threshold_and_state(
+    vigor: np.ndarray,
+    bout_quantile: float,
+    *,
+    bout_threshold_override: str | None = None,
+) -> tuple[float, np.ndarray]:
+    vigor = np.asarray(vigor, dtype=float).reshape(-1)
+    if bout_threshold_override not in _BOUT_THRESHOLD_OVERRIDES:
+        allowed = ", ".join(repr(value) for value in sorted(_BOUT_THRESHOLD_OVERRIDES, key=str))
+        raise ValueError(f"Unknown bout_threshold_override={bout_threshold_override!r}. Allowed: {allowed}.")
+
+    if bout_threshold_override == "positive_vigor_quantile":
+        positive_vigor = vigor[vigor > 0]
+        if positive_vigor.size:
+            threshold = float(np.quantile(positive_vigor, bout_quantile))
+            return threshold, (vigor >= threshold).astype(int)
+
+    threshold = float(np.quantile(vigor, bout_quantile))
+    if bout_threshold_override == "strict_zero_threshold" and threshold == 0.0:
+        return threshold, (vigor > threshold).astype(int)
+    return threshold, (vigor >= threshold).astype(int)
 
 
 def bin_signal_to_frames(signal: np.ndarray, n_frames: int, reducer: str = "mean") -> np.ndarray:
