@@ -152,9 +152,17 @@ The strict runner includes:
   selection controls;
 - PCA, random-subspace deletion, causal low-pass, and raw baselines;
 - fold-local bout thresholds and behavioral decoders;
+- optional behavior-target sensitivity grids over bout thresholds and smoothed
+  vigor targets;
+- block-shuffle and circular-shift behavior nulls that preserve temporal
+  structure better than frame-wise permutation;
 - out-of-fold causal-state embeddings, normalized dynamic MSE, persistence,
   and mean-state references;
 - out-of-fold latent-to-behavior correlation tables for causal-state diagnostics;
+- strict causal-sufficiency probes that test whether extra neural history
+  improves behavior prediction beyond the learned latent state;
+- optional held-out pseudo-artifact probes for configured candidate artifact
+  centers;
 - matched linear and shallow nonlinear transition sensitivity;
 - held-out trace correlation, NRMSE, retained energy, and spectral-power
   preservation;
