@@ -28,13 +28,23 @@
     1,
     2
   ],
+  "target_bout_quantiles": [],
+  "target_smooth_windows": [],
   "null_block_size": 60,
   "null_seeds": [
     0
   ],
+  "null_strategies": [
+    "block_shuffle"
+  ],
   "uncertainty_block_size": 60,
   "uncertainty_n_bootstrap": 100,
   "uncertainty_n_permutations": 200,
+  "causal_sufficiency_targets": [
+    "vigor"
+  ],
+  "artifact_probe_centers": [],
+  "artifact_probe_half_width": 2,
   "causal": {
     "window": 15,
     "target_shifts": [

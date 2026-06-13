@@ -9,9 +9,12 @@ from ica_denoising.causal_behavior_decoding import CausalStateConfig
 from ica_denoising.evaluation_pipeline import (
     EvaluationConfig,
     fit_bss_model,
+    fit_latent_benchmark_model,
+    ic_quality_table_for_bss_model,
     make_strict_folds,
     run_cluster_stability_sweep,
     run_evaluation,
+    select_components_by_ic_quality,
     segmented_welch_psd,
 )
 
@@ -84,7 +87,27 @@ class EvaluationPipelineTests(unittest.TestCase):
         np.testing.assert_allclose(original_model.train_components, changed_model.train_components)
         self.assertEqual(np.intersect1d(original_model.train_idx, fold.test_idx).size, 0)
 
-    def test_strict_sobi_uses_variance_threshold_pca_rank_by_default(self) -> None:
+    def test_strict_sobi_uses_full_rank_by_default(self) -> None:
+        fold = make_strict_folds(180, n_splits=3, gap=5, required_gap=5)[1]
+
+        model = fit_bss_model(
+            self.traces,
+            fold.train_idx,
+            method="sobi",
+            n_components=None,
+            pca_components=None,
+            pca_variance_threshold=None,
+            max_iter=20,
+            random_state=3,
+        )
+
+        self.assertEqual(model.n_components, min(self.traces[fold.train_idx].shape))
+        self.assertIsNone(model.pca_components)
+        self.assertIsNone(model.pca_explained_variance_ratio)
+        self.assertEqual(model.component_selection_mode, "full_trace_count")
+        self.assertEqual(model.train_components.shape[1], model.n_components)
+
+    def test_strict_sobi_can_use_variance_threshold_pca_rank(self) -> None:
         fold = make_strict_folds(180, n_splits=3, gap=5, required_gap=5)[1]
 
         model = fit_bss_model(
@@ -120,6 +143,71 @@ class EvaluationPipelineTests(unittest.TestCase):
         )
         self.assertEqual(spectra.shape[0], 2)
         self.assertTrue(np.isfinite(spectra).all())
+
+    def test_latent_benchmark_variants_reconstruct_finite_traces(self) -> None:
+        fold = make_strict_folds(180, n_splits=3, gap=5, required_gap=5)[0]
+        for method in ("factor_analysis", "sparse_pca", "nmf"):
+            model = fit_latent_benchmark_model(
+                self.traces,
+                fold.train_idx,
+                method=method,
+                rank=2,
+                random_state=0,
+            )
+            reconstructed = model.reconstruct(self.traces)
+
+            self.assertEqual(reconstructed.shape, self.traces.shape)
+            self.assertTrue(np.isfinite(reconstructed).all())
+            self.assertEqual(np.intersect1d(model.train_idx, fold.test_idx).size, 0)
+
+    def test_nmf_benchmark_uses_train_fold_shift_for_negative_traces(self) -> None:
+        fold = make_strict_folds(180, n_splits=3, gap=5, required_gap=5)[1]
+        shifted = self.traces - 2.5
+
+        model = fit_latent_benchmark_model(
+            shifted,
+            fold.train_idx,
+            method="nmf",
+            rank=2,
+            random_state=0,
+        )
+        reconstructed = model.reconstruct(shifted)
+
+        self.assertEqual(reconstructed.shape, shifted.shape)
+        self.assertTrue(np.isfinite(reconstructed).all())
+        expected_shift = np.minimum(shifted[fold.train_idx].min(axis=0), 0.0)
+        np.testing.assert_allclose(model.train_shift, expected_shift)
+
+    def test_ic_quality_selectors_are_behavior_blind_and_valid(self) -> None:
+        fold = make_strict_folds(180, n_splits=3, gap=5, required_gap=5)[0]
+        model = fit_bss_model(
+            self.traces,
+            fold.train_idx,
+            method="fastica",
+            n_components=3,
+            max_iter=100,
+            random_state=0,
+        )
+
+        table = ic_quality_table_for_bss_model(
+            model,
+            sample_rate_hz=10.0,
+            nperseg=32,
+            noverlap=16,
+        )
+        nonartifact = select_components_by_ic_quality(
+            table, strategy="ic_quality_nonartifact"
+        )
+        strict_keep = select_components_by_ic_quality(
+            table, strategy="ic_quality_strict_keep"
+        )
+
+        self.assertIn("recommendation", table.columns)
+        self.assertNotIn("max_abs_behavior_corr", table.columns)
+        self.assertTrue(
+            np.isin(nonartifact, np.arange(model.train_components.shape[1])).all()
+        )
+        self.assertTrue(np.isin(strict_keep, nonartifact).all())
 
     def test_cluster_stability_sweep_reports_pairwise_seed_agreement(self) -> None:
         fold = make_strict_folds(180, n_splits=3, gap=5, required_gap=5)[0]
@@ -194,11 +282,104 @@ class EvaluationPipelineTests(unittest.TestCase):
         self.assertEqual(result.leakage_audit["n_test_frames_seen_during_fit"].max(), 0)
         self.assertIn("dynamic_mse_normalized", result.causal_metrics.columns)
         self.assertIn("fold", result.causal_embeddings.columns)
+        self.assertFalse(result.causal_sufficiency.empty)
+        self.assertIn("rmse_delta_aug_minus_base", result.causal_sufficiency.columns)
+        self.assertIn("target_variant", result.behavior_metrics.columns)
+        self.assertIn("null_strategy", result.behavior_metrics.columns)
         self.assertIn("spectral_power_retention", result.trace_metrics.columns)
         raw_trace_metrics = result.trace_metrics[result.trace_metrics["variant"] == "raw"]
         np.testing.assert_allclose(raw_trace_metrics["global_pearson"], 1.0)
         np.testing.assert_allclose(raw_trace_metrics["retained_energy_fraction"], 1.0)
         np.testing.assert_allclose(raw_trace_metrics["spectral_power_retention"], 1.0)
+
+    def test_evaluation_runs_model_benchmark_variants(self) -> None:
+        config = EvaluationConfig(
+            sample_rate_hz=10.0,
+            n_splits=2,
+            gap=5,
+            bss_methods=("fastica",),
+            n_components=3,
+            bss_max_iter=100,
+            n_clusters=2,
+            keep_cluster_counts=(1,),
+            selection_strategies=("low_frequency",),
+            selection_random_seeds=(0,),
+            feature_start_bin=1,
+            welch_nperseg=32,
+            welch_noverlap=16,
+            baseline_ranks=(),
+            benchmark_latent_methods=("factor_analysis", "nmf"),
+            benchmark_latent_ranks=(2,),
+            ic_quality_selection_strategies=("ic_quality_nonartifact",),
+            bss_component_counts=(2,),
+            bss_pca_variance_thresholds=(),
+            lowpass_cutoffs_hz=(),
+            decoder_lags=(0, 1),
+            null_block_size=12,
+            null_seeds=(0,),
+            causal=CausalStateConfig(window=6, target_shifts=(0,), latent_dim=2, gap=5),
+        )
+
+        result = run_evaluation(self.traces, self.targets, config)
+
+        variants = set(result.trace_metrics["variant"])
+        self.assertIn("factor_analysis/rank2", variants)
+        self.assertIn("nmf/rank2", variants)
+        self.assertIn("fastica/ic_quality_nonartifact", variants)
+        self.assertIn("fastica/components2/low_frequency/k1", variants)
+        self.assertTrue(result.leakage_audit["leakage_free"].all())
+        self.assertFalse(
+            result.behavior_metrics[
+                result.behavior_metrics["test_version"] == "factor_analysis/rank2"
+            ].empty
+        )
+        self.assertIn("artifact_score", result.component_selections.columns)
+        self.assertIn("recommendation", result.component_selections.columns)
+
+    def test_target_sensitivity_and_circular_null_emit_provenance(self) -> None:
+        config = EvaluationConfig(
+            sample_rate_hz=10.0,
+            n_splits=2,
+            gap=5,
+            bss_methods=(),
+            baseline_ranks=(),
+            lowpass_cutoffs_hz=(),
+            decoder_lags=(0, 1),
+            target_bout_quantiles=(0.65,),
+            target_smooth_windows=(3,),
+            null_block_size=12,
+            null_seeds=(0,),
+            null_strategies=("block_shuffle", "circular_shift"),
+            causal=CausalStateConfig(window=6, target_shifts=(0,), latent_dim=2, gap=5),
+            artifact_probe_centers=(),
+        )
+
+        result = run_evaluation(self.traces, self.targets, config)
+
+        self.assertIn("q0.65_smooth3", set(result.behavior_metrics["target_variant"]))
+        nulls = result.behavior_metrics[result.behavior_metrics["comparison"] == "null_within"]
+        self.assertEqual(set(nulls["null_strategy"]), {"block_shuffle", "circular_shift"})
+
+    def test_artifact_probe_uses_configured_held_out_centers(self) -> None:
+        config = EvaluationConfig(
+            sample_rate_hz=10.0,
+            n_splits=2,
+            gap=5,
+            bss_methods=(),
+            baseline_ranks=(),
+            lowpass_cutoffs_hz=(),
+            decoder_lags=(0, 1),
+            null_seeds=(0,),
+            causal=CausalStateConfig(window=6, target_shifts=(0,), latent_dim=2, gap=5),
+            artifact_probe_centers=(50,),
+            artifact_probe_half_width=2,
+        )
+
+        result = run_evaluation(self.traces, self.targets, config)
+
+        self.assertFalse(result.artifact_probe_metrics.empty)
+        self.assertIn("artifact_center", result.artifact_probe_metrics.columns)
+        self.assertIn(50, set(result.artifact_probe_metrics["artifact_center"]))
 
 
 if __name__ == "__main__":

@@ -14,7 +14,7 @@ import pandas as pd
 
 BSS_METHODS = ("fastica", "infomax", "sobi", "jade")
 PCA_REDUCED_BSS_METHODS = {"sobi", "jade"}
-DEFAULT_PCA_VARIANCE_THRESHOLD = 0.95
+DEFAULT_PCA_VARIANCE_THRESHOLD: float | None = None
 
 
 @dataclass(frozen=True)
@@ -101,19 +101,6 @@ def add_project_imports(project_root: Path | None = None) -> Path:
 def dataset_registry(project_root: Path | None = None) -> dict[str, DatasetSpec]:
     project_root = resolve_project_root() if project_root is None else Path(project_root)
     registry = {
-        "motorneurons/fish3_trace2_dff": DatasetSpec(
-            key="motorneurons/fish3_trace2_dff",
-            data_name="fish3_trace2_dff",
-            group="motorneurons",
-            trace_path=project_root / "data" / "motorneurons" / "fish3_trace2_dff.npy",
-            sample_rate_hz=4.0,
-            default_n_components=11,
-            recording_id="fish3_trace2",
-            fish_id="fish3",
-            run_id="trace2",
-            modality="dff",
-            notes="Motorneuron dF/F traces.",
-        ),
         "motorneurons/gcM_restored": DatasetSpec(
             key="motorneurons/gcM_restored",
             data_name="gcM_restored",
@@ -125,7 +112,50 @@ def dataset_registry(project_root: Path | None = None) -> dict[str, DatasetSpec]
             notes="Restored motorneuron traces.",
         ),
     }
+    registry.update(_discover_motorneurons_datasets(project_root))
     registry.update(_discover_v2a_datasets(project_root))
+    return registry
+
+
+def _discover_motorneurons_datasets(project_root: Path) -> dict[str, DatasetSpec]:
+    pickle_path = project_root / "data" / "motorneurons" / "df_motoneurons_F3T1_F3T2_F5T2.pkl"
+    if not pickle_path.exists():
+        return {}
+
+    payload = pd.read_pickle(pickle_path)
+    if not isinstance(payload, pd.DataFrame):
+        raise TypeError(f"{pickle_path} must contain a pandas DataFrame.")
+    required_columns = {"Fish", "Trace", "fluo", "fluo_type", "n_cells"}
+    missing = required_columns.difference(payload.columns)
+    if missing:
+        missing_str = ", ".join(sorted(missing))
+        raise ValueError(f"{pickle_path} is missing required columns: {missing_str}.")
+
+    registry: dict[str, DatasetSpec] = {}
+    unique_rows = (
+        payload.loc[:, ["Fish", "Trace", "fluo_type", "n_cells"]]
+        .drop_duplicates(subset=["Fish", "Trace", "fluo_type"])
+        .sort_values(["Fish", "Trace", "fluo_type"])
+    )
+    for row in unique_rows.itertuples(index=False):
+        fish_value = int(float(row.Fish))
+        trace_value = int(float(row.Trace))
+        modality = str(row.fluo_type).lower()
+        data_name = f"fish{fish_value}_trace{trace_value}_{modality}"
+        key = f"motorneurons/{data_name}"
+        registry[key] = DatasetSpec(
+            key=key,
+            data_name=data_name,
+            group="motorneurons",
+            trace_path=pickle_path,
+            sample_rate_hz=4.0,
+            default_n_components=int(float(row.n_cells)),
+            recording_id=f"fish{fish_value}_trace{trace_value}",
+            fish_id=f"fish{fish_value}",
+            run_id=f"trace{trace_value}",
+            modality=modality,
+            notes="Motorneuron traces discovered from the curated multi-recording pickle.",
+        )
     return registry
 
 
@@ -253,13 +283,58 @@ def load_traces(dataset_key: str, project_root: Path | None = None) -> tuple[Dat
     spec = get_dataset(dataset_key, project_root)
     if not spec.trace_path.exists():
         raise FileNotFoundError(spec.trace_path)
-    traces = np.asarray(np.load(spec.trace_path, allow_pickle=False), dtype=float)
+    traces = _load_trace_array(spec)
     if traces.ndim != 2:
         raise ValueError(f"{spec.trace_path} must be 2D, got shape {traces.shape}.")
     if spec.group == "v2a-RSNs":
         traces = _subset_v2a_cells(spec, traces)
         traces = _drop_v2a_bad_frames(spec, traces)
     return spec, replace_nonfinite_by_neuron_median(traces)
+
+
+def _load_trace_array(spec: DatasetSpec) -> np.ndarray:
+    if spec.trace_path.suffix == ".npy":
+        return np.asarray(np.load(spec.trace_path, allow_pickle=False), dtype=float)
+    if spec.trace_path.suffix == ".pkl" and spec.group == "motorneurons":
+        return _load_motorneurons_pickle_traces(spec)
+    raise ValueError(f"Unsupported trace file format for {spec.key}: {spec.trace_path.suffix}")
+
+
+def _load_motorneurons_pickle_traces(spec: DatasetSpec) -> np.ndarray:
+    payload = pd.read_pickle(spec.trace_path)
+    if not isinstance(payload, pd.DataFrame):
+        raise TypeError(f"{spec.trace_path} must contain a pandas DataFrame.")
+    required_columns = {"Fish", "Trace", "fluo", "fluo_type"}
+    missing = required_columns.difference(payload.columns)
+    if missing:
+        missing_str = ", ".join(sorted(missing))
+        raise ValueError(f"{spec.trace_path} is missing required columns: {missing_str}.")
+
+    fish_token = (spec.fish_id or "").lower()
+    run_token = (spec.run_id or "").lower()
+    fish_match = re.search(r"(\d+)$", fish_token)
+    trace_match = re.search(r"(\d+)$", run_token)
+    if fish_match is None or trace_match is None:
+        raise ValueError(
+            f"{spec.key} needs numeric fish_id/run_id to select traces from {spec.trace_path}."
+        )
+
+    fish_value = float(fish_match.group(1))
+    trace_value = float(trace_match.group(1))
+    modality = (spec.modality or "").lower()
+    matches = payload[
+        (payload["Fish"].astype(float) == fish_value)
+        & (payload["Trace"].astype(float) == trace_value)
+        & (payload["fluo_type"].astype(str).str.lower() == modality)
+    ]
+    if matches.empty:
+        raise ValueError(
+            f"No rows in {spec.trace_path} match Fish={fish_value:g}, "
+            f"Trace={trace_value:g}, fluo_type={modality!r} for {spec.key}."
+        )
+
+    traces = np.asarray(matches.iloc[0]["fluo"], dtype=float)
+    return traces
 
 
 def _subset_v2a_cells(spec: DatasetSpec, traces: np.ndarray) -> np.ndarray:
@@ -782,7 +857,7 @@ def choose_n_components(traces: np.ndarray, requested: int | None) -> int:
 
 def choose_pca_components_for_variance(
     traces: np.ndarray,
-    variance_threshold: float = DEFAULT_PCA_VARIANCE_THRESHOLD,
+    variance_threshold: float = 0.95,
 ) -> tuple[int, float]:
     """Return the smallest PCA rank explaining at least ``variance_threshold``."""
     ratios = pca_explained_variance_ratios(traces)
