@@ -27,7 +27,9 @@ def reconstruct_with_rejected(
             f"got {mixing_arr.shape} for {ics.shape} ICs."
         )
     if mean_arr.shape != (mixing_arr.shape[0],):
-        raise ValueError(f"mean must have shape ({mixing_arr.shape[0]},), got {mean_arr.shape}.")
+        raise ValueError(
+            f"mean must have shape ({mixing_arr.shape[0]},), got {mean_arr.shape}."
+        )
     comps = ics.copy()
     reject = [int(component) for component in reject_components]
     if reject:
@@ -57,7 +59,9 @@ def leave_one_ic_out_validation(
     full_population = np.mean(full, axis=1)
     rows = []
     for component in component_ids:
-        removed = reconstruct_with_rejected(ic_comps, mixing, mean, reject_components=[component])
+        removed = reconstruct_with_rejected(
+            ic_comps, mixing, mean, reject_components=[component]
+        )
         delta = removed - full
         row = {
             "component": int(component),
@@ -65,16 +69,22 @@ def leave_one_ic_out_validation(
             "rms_delta": float(np.sqrt(np.mean(delta**2))),
             "reference_corr_full": float(full_reference_corr),
             "reference_corr_removed": float(_pearson_flat(reference, removed)),
-            "variance_ratio_median_removed": float(_median_variance_ratio(reference, removed)),
+            "variance_ratio_median_removed": float(
+                _median_variance_ratio(reference, removed)
+            ),
         }
-        row["reference_corr_delta"] = row["reference_corr_removed"] - row["reference_corr_full"]
+        row["reference_corr_delta"] = (
+            row["reference_corr_removed"] - row["reference_corr_full"]
+        )
         removed_population = np.mean(removed, axis=1)
         for name, target in targets.items():
             full_corr = _pearson_1d(full_population, target)
             removed_corr = _pearson_1d(removed_population, target)
             row[f"behavior_corr_full_{name}"] = float(full_corr)
             row[f"behavior_corr_removed_{name}"] = float(removed_corr)
-            row[f"behavior_corr_delta_{name}"] = float(abs(removed_corr) - abs(full_corr))
+            row[f"behavior_corr_delta_{name}"] = float(
+                abs(removed_corr) - abs(full_corr)
+            )
         rows.append(row)
 
     return pd.DataFrame(rows)
@@ -99,7 +109,9 @@ def grouped_removal_validation(
     rows = []
     for name, components in groups.items():
         component_list = [int(component) for component in components]
-        removed = reconstruct_with_rejected(ic_comps, mixing, mean, reject_components=component_list)
+        removed = reconstruct_with_rejected(
+            ic_comps, mixing, mean, reject_components=component_list
+        )
         delta = removed - full
         row = {
             "group": str(name),
@@ -109,25 +121,35 @@ def grouped_removal_validation(
             "rms_delta": float(np.sqrt(np.mean(delta**2))),
             "reference_corr_full": float(full_reference_corr),
             "reference_corr_removed": float(_pearson_flat(reference, removed)),
-            "variance_ratio_median_removed": float(_median_variance_ratio(reference, removed)),
+            "variance_ratio_median_removed": float(
+                _median_variance_ratio(reference, removed)
+            ),
         }
-        row["reference_corr_delta"] = row["reference_corr_removed"] - row["reference_corr_full"]
+        row["reference_corr_delta"] = (
+            row["reference_corr_removed"] - row["reference_corr_full"]
+        )
         removed_population = np.mean(removed, axis=1)
         for target_name, target in targets.items():
             full_corr = _pearson_1d(full_population, target)
             removed_corr = _pearson_1d(removed_population, target)
-            row[f"behavior_corr_delta_{target_name}"] = float(abs(removed_corr) - abs(full_corr))
+            row[f"behavior_corr_delta_{target_name}"] = float(
+                abs(removed_corr) - abs(full_corr)
+            )
         rows.append(row)
     return pd.DataFrame(rows)
 
 
-def _orient_reference(reference: np.ndarray, target_shape: tuple[int, int]) -> np.ndarray:
+def _orient_reference(
+    reference: np.ndarray, target_shape: tuple[int, int]
+) -> np.ndarray:
     arr = np.asarray(reference, dtype=float)
     if arr.shape == target_shape:
         return arr
     if arr.T.shape == target_shape:
         return arr.T
-    raise ValueError(f"reference_traces shape {arr.shape} cannot match reconstruction {target_shape}.")
+    raise ValueError(
+        f"reference_traces shape {arr.shape} cannot match reconstruction {target_shape}."
+    )
 
 
 def _normalize_targets(
@@ -145,7 +167,9 @@ def _normalize_targets(
             if hasattr(behavior_targets, name)
         }
     return {
-        str(name): _align_1d_target(np.asarray(values, dtype=float).reshape(-1), n_frames)
+        str(name): _align_1d_target(
+            np.asarray(values, dtype=float).reshape(-1), n_frames
+        )
         for name, values in raw.items()
     }
 
@@ -158,7 +182,9 @@ def _pearson_1d(x: np.ndarray, y: np.ndarray) -> float:
     x = np.asarray(x, dtype=float).reshape(-1)
     y = np.asarray(y, dtype=float).reshape(-1)
     if x.size != y.size:
-        raise ValueError(f"Correlation inputs must match lengths, got {x.size} and {y.size}.")
+        raise ValueError(
+            f"Correlation inputs must match lengths, got {x.size} and {y.size}."
+        )
     x_std = np.std(x)
     y_std = np.std(y)
     if x_std == 0 or y_std == 0 or not np.isfinite(x_std) or not np.isfinite(y_std):

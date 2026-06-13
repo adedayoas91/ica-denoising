@@ -87,7 +87,9 @@ def build_provenance_manifest(specs: Iterable[DatasetSpec]) -> pd.DataFrame:
     manifest["trace_duplicate_count"] = 0
     trace_valid = manifest["trace_sha256"].notna()
     manifest.loc[trace_valid, "trace_duplicate_count"] = (
-        manifest.loc[trace_valid].groupby("trace_sha256")["dataset_key"].transform("size")
+        manifest.loc[trace_valid]
+        .groupby("trace_sha256")["dataset_key"]
+        .transform("size")
     )
     manifest["behavior_duplicate_count"] = 0
     behavior_valid = manifest["behavior_sha256"].notna()
@@ -110,7 +112,9 @@ def build_provenance_manifest(specs: Iterable[DatasetSpec]) -> pd.DataFrame:
 def write_json_manifest(path: Path, payload: object) -> Path:
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(_json_ready(payload), indent=2, sort_keys=True), encoding="utf-8")
+    path.write_text(
+        json.dumps(_json_ready(payload), indent=2, sort_keys=True), encoding="utf-8"
+    )
     return path
 
 
@@ -160,7 +164,9 @@ def compute_bpi_ablation(
         ["recording", "method"], dropna=False
     ):
         for subset in ("combined", "within", "transfer"):
-            selected = group if subset == "combined" else group[group["scope"] == subset]
+            selected = (
+                group if subset == "combined" else group[group["scope"] == subset]
+            )
             if selected.empty:
                 continue
             for normalization in ("raw_null", "raw_only", "none"):
@@ -175,7 +181,10 @@ def compute_bpi_ablation(
                     weights = np.ones(len(selected), dtype=float)
                     if weighting == "custom":
                         weights = np.array(
-                            [float(custom_weights.get(str(name), 0.0)) for name in selected["component"]],
+                            [
+                                float(custom_weights.get(str(name), 0.0))
+                                for name in selected["component"]
+                            ],
                             dtype=float,
                         )
                     valid = np.isfinite(values) & np.isfinite(weights) & (weights > 0)
@@ -216,8 +225,10 @@ def _normalize_bpi_components(
     else:
         raise ValueError(f"Unknown normalization: {normalization}")
     values = np.full(score.shape, np.nan, dtype=float)
-    valid = np.isfinite(numerator) & np.isfinite(denominator) & (
-        np.abs(denominator) > denominator_epsilon
+    valid = (
+        np.isfinite(numerator)
+        & np.isfinite(denominator)
+        & (np.abs(denominator) > denominator_epsilon)
     )
     values[valid] = 100.0 * numerator[valid] / denominator[valid]
     return values
@@ -238,18 +249,28 @@ def cluster_stability_table(
         row: dict[str, object] = {
             "left": left,
             "right": right,
-            "adjusted_rand_index": float(adjusted_rand_score(left_labels, right_labels)),
+            "adjusted_rand_index": float(
+                adjusted_rand_score(left_labels, right_labels)
+            ),
             "retained_jaccard": np.nan,
             "rank_spearman": np.nan,
         }
-        if retained_sets is not None and left in retained_sets and right in retained_sets:
+        if (
+            retained_sets is not None
+            and left in retained_sets
+            and right in retained_sets
+        ):
             left_set = set(int(value) for value in retained_sets[left])
             right_set = set(int(value) for value in retained_sets[right])
             union = left_set | right_set
             row["retained_jaccard"] = (
                 float(len(left_set & right_set) / len(union)) if union else 1.0
             )
-        if component_ranks is not None and left in component_ranks and right in component_ranks:
+        if (
+            component_ranks is not None
+            and left in component_ranks
+            and right in component_ranks
+        ):
             corr = spearmanr(component_ranks[left], component_ranks[right]).correlation
             row["rank_spearman"] = float(corr) if np.isfinite(corr) else np.nan
         rows.append(row)
@@ -289,7 +310,10 @@ def temporal_dependence_diagnostics(
                         np.nanmedian(np.abs(variant_acf - raw_acf))
                     ),
                     "xcf_relative_frobenius_change": (
-                        float(np.linalg.norm(variant_xcf - raw_xcf, ord="fro") / denominator)
+                        float(
+                            np.linalg.norm(variant_xcf - raw_xcf, ord="fro")
+                            / denominator
+                        )
                         if denominator > 0
                         else np.nan
                     ),
@@ -363,9 +387,7 @@ def paired_block_sign_permutation_pvalue(
     exceedances = 0
     for _ in range(n_permutations):
         signs = rng.choice((-1.0, 1.0), size=len(blocks))
-        permuted = np.concatenate(
-            [sign * block for sign, block in zip(signs, blocks)]
-        )
+        permuted = np.concatenate([sign * block for sign, block in zip(signs, blocks)])
         exceedances += abs(float(np.mean(permuted))) >= observed
     return float((exceedances + 1) / (n_permutations + 1))
 
@@ -427,9 +449,7 @@ def paired_segmented_block_sign_permutation_pvalue(
     exceedances = 0
     for _ in range(n_permutations):
         signs = rng.choice((-1.0, 1.0), size=len(blocks))
-        permuted = np.concatenate(
-            [sign * block for sign, block in zip(signs, blocks)]
-        )
+        permuted = np.concatenate([sign * block for sign, block in zip(signs, blocks)])
         exceedances += abs(float(np.mean(permuted))) >= observed
     return float((exceedances + 1) / (n_permutations + 1))
 
@@ -456,7 +476,9 @@ def summarize_recording_effects(
     for method in pivot.columns:
         if method == reference_method:
             continue
-        differences = (pivot[method] - pivot[reference_method]).dropna().to_numpy(dtype=float)
+        differences = (
+            (pivot[method] - pivot[reference_method]).dropna().to_numpy(dtype=float)
+        )
         if differences.size == 0:
             continue
         rows.append(
@@ -506,7 +528,9 @@ def quantify_motor_neuron_artifact(
                     "artifact_center": int(artifact_center),
                     "half_width": int(half_width),
                     "guard_width": int(guard_width),
-                    "far_pearson": _safe_pearson(raw[far_mask, neuron], traces[far_mask, neuron]),
+                    "far_pearson": _safe_pearson(
+                        raw[far_mask, neuron], traces[far_mask, neuron]
+                    ),
                     "far_nrmse": _normalized_rmse(
                         raw[far_mask, neuron], traces[far_mask, neuron], scale
                     ),
@@ -525,12 +549,12 @@ def interpolate_window(traces: np.ndarray, window: np.ndarray) -> np.ndarray:
         return traces.copy()
     start, stop = int(window.min()), int(window.max()) + 1
     if start < 1 or stop >= traces.shape[0]:
-        raise ValueError("Interpolation window must have observed frames on both sides.")
+        raise ValueError(
+            "Interpolation window must have observed frames on both sides."
+        )
     corrected = traces.copy()
     weights = np.linspace(0.0, 1.0, stop - start + 2)[1:-1, np.newaxis]
-    corrected[start:stop] = (
-        (1.0 - weights) * traces[start - 1] + weights * traces[stop]
-    )
+    corrected[start:stop] = (1.0 - weights) * traces[start - 1] + weights * traces[stop]
     return corrected
 
 
@@ -550,7 +574,9 @@ def pseudo_artifact_interpolation_test(
             {
                 "center": center,
                 "half_width": int(half_width),
-                "rmse": float(np.sqrt(np.mean((corrected[window] - traces[window]) ** 2))),
+                "rmse": float(
+                    np.sqrt(np.mean((corrected[window] - traces[window]) ** 2))
+                ),
             }
         )
     return pd.DataFrame(rows)
@@ -569,11 +595,16 @@ def pseudo_artifact_reconstruction_test(
     for center_value in centers:
         center = int(center_value)
         window = _bounded_window(raw.shape[0], center, half_width)
-        candidates = {"local_interpolation": interpolate_window(raw, window), **variants}
+        candidates = {
+            "local_interpolation": interpolate_window(raw, window),
+            **variants,
+        }
         for name, corrected in candidates.items():
             corrected = _validate_time_by_features(corrected, name)
             if corrected.shape != raw.shape:
-                raise ValueError(f"{name} has shape {corrected.shape}; expected {raw.shape}.")
+                raise ValueError(
+                    f"{name} has shape {corrected.shape}; expected {raw.shape}."
+                )
             rows.append(
                 {
                     "center": center,
@@ -621,7 +652,9 @@ def _safe_pearson(left: np.ndarray, right: np.ndarray) -> float:
     return float(np.corrcoef(left, right)[0, 1])
 
 
-def _normalized_rmse(reference: np.ndarray, estimate: np.ndarray, scale: float) -> float:
+def _normalized_rmse(
+    reference: np.ndarray, estimate: np.ndarray, scale: float
+) -> float:
     if not np.isfinite(scale) or scale <= 0:
         return np.nan
     return float(np.sqrt(np.mean((reference - estimate) ** 2)) / scale)

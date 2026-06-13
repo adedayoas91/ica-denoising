@@ -44,7 +44,10 @@ class EvaluationDiagnosticsTests(unittest.TestCase):
             self.assertTrue((manifest["trace_duplicate_count"] == 2).all())
             self.assertTrue((manifest["behavior_duplicate_count"] == 2).all())
             self.assertTrue(
-                (manifest["provenance_warning"] == "duplicate trace and behavior hashes").all()
+                (
+                    manifest["provenance_warning"]
+                    == "duplicate trace and behavior hashes"
+                ).all()
             )
 
     def test_bpi_ablation_normalizes_raw_to_one_hundred(self) -> None:

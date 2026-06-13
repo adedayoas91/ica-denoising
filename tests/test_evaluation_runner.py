@@ -17,7 +17,9 @@ from ica_denoising.evaluation_runner import (
 
 class EvaluationRunnerTests(unittest.TestCase):
     def test_example_config_loads_tuple_fields_and_causal_models(self) -> None:
-        path = Path(__file__).resolve().parents[1] / "configs" / "evaluation.example.json"
+        path = (
+            Path(__file__).resolve().parents[1] / "configs" / "evaluation.example.json"
+        )
         config = load_evaluation_config(path, sample_rate_hz=7.5)
 
         self.assertEqual(config.sample_rate_hz, 7.5)
@@ -96,7 +98,9 @@ class EvaluationRunnerTests(unittest.TestCase):
                         {
                             "target": "tail_vigor",
                             "target_variant": target_variant,
-                            "bout_quantile": 0.75 if target_variant == "primary" else 0.65,
+                            "bout_quantile": 0.75
+                            if target_variant == "primary"
+                            else 0.65,
                             "smooth_window": 1 if target_variant == "primary" else 3,
                             "null_strategy": "observed",
                             "task": "regression",
@@ -111,7 +115,9 @@ class EvaluationRunnerTests(unittest.TestCase):
                         {
                             "target": "tail_vigor",
                             "target_variant": target_variant,
-                            "bout_quantile": 0.75 if target_variant == "primary" else 0.65,
+                            "bout_quantile": 0.75
+                            if target_variant == "primary"
+                            else 0.65,
                             "smooth_window": 1 if target_variant == "primary" else 3,
                             "null_strategy": "observed",
                             "task": "regression",
@@ -168,12 +174,20 @@ class EvaluationRunnerTests(unittest.TestCase):
             )
             uncertainty = pd.DataFrame([{"method": "clean", "effect": 0.1}])
             causal_sufficiency = pd.DataFrame(
-                [{"variant": "clean", "target": "vigor", "rmse_delta_aug_minus_base": -0.1}]
+                [
+                    {
+                        "variant": "clean",
+                        "target": "vigor",
+                        "rmse_delta_aug_minus_base": -0.1,
+                    }
+                ]
             )
             artifact = pd.DataFrame(
                 [{"variant": "clean", "artifact_center": 40, "rmse": 0.1}]
             )
-            bpi = pd.DataFrame([{"recording": "already-present", "method": "clean", "bpi": 90.0}])
+            bpi = pd.DataFrame(
+                [{"recording": "already-present", "method": "clean", "bpi": 90.0}]
+            )
             tables = {
                 "trace_metrics": (
                     pd.DataFrame([{"variant": "raw", "global_pearson": 1.0}]),
@@ -202,7 +216,10 @@ class EvaluationRunnerTests(unittest.TestCase):
                 modality="fluorescence",
             )
 
-            with patch("ica_denoising.evaluation_runner.dataset_registry", return_value={spec.key: spec}):
+            with patch(
+                "ica_denoising.evaluation_runner.dataset_registry",
+                return_value={spec.key: spec},
+            ):
                 aggregate_paths = write_recording_aggregate(
                     {spec.key: paths},
                     project_root=root,

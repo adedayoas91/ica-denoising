@@ -86,12 +86,16 @@ def resolve_project_root(start: Path | None = None) -> Path:
     for candidate in (start, *start.parents):
         if (candidate / "pyproject.toml").exists() and (candidate / "src").exists():
             return candidate
-    raise FileNotFoundError("Could not find project root containing pyproject.toml and src/.")
+    raise FileNotFoundError(
+        "Could not find project root containing pyproject.toml and src/."
+    )
 
 
 def add_project_imports(project_root: Path | None = None) -> Path:
     """Add project source directories to ``sys.path`` for notebooks."""
-    project_root = resolve_project_root() if project_root is None else Path(project_root)
+    project_root = (
+        resolve_project_root() if project_root is None else Path(project_root)
+    )
     path_str = str(project_root / "src")
     if path_str not in sys.path:
         sys.path.insert(0, path_str)
@@ -99,7 +103,9 @@ def add_project_imports(project_root: Path | None = None) -> Path:
 
 
 def dataset_registry(project_root: Path | None = None) -> dict[str, DatasetSpec]:
-    project_root = resolve_project_root() if project_root is None else Path(project_root)
+    project_root = (
+        resolve_project_root() if project_root is None else Path(project_root)
+    )
     registry = {
         "motorneurons/gcM_restored": DatasetSpec(
             key="motorneurons/gcM_restored",
@@ -118,7 +124,9 @@ def dataset_registry(project_root: Path | None = None) -> dict[str, DatasetSpec]
 
 
 def _discover_motorneurons_datasets(project_root: Path) -> dict[str, DatasetSpec]:
-    pickle_path = project_root / "data" / "motorneurons" / "df_motoneurons_F3T1_F3T2_F5T2.pkl"
+    pickle_path = (
+        project_root / "data" / "motorneurons" / "df_motoneurons_F3T1_F3T2_F5T2.pkl"
+    )
     if not pickle_path.exists():
         return {}
 
@@ -165,7 +173,10 @@ def _discover_v2a_datasets(project_root: Path) -> dict[str, DatasetSpec]:
     legacy_data_root = data_root / "new_data_09112022"
     if not data_root.exists():
         return {}
-    if not any(path.is_dir() and _looks_like_recording_dir(path) for path in data_root.iterdir()):
+    if not any(
+        path.is_dir() and _looks_like_recording_dir(path)
+        for path in data_root.iterdir()
+    ):
         data_root = legacy_data_root
     registry: dict[str, DatasetSpec] = {}
     if not data_root.exists():
@@ -264,7 +275,9 @@ def available_datasets(project_root: Path | None = None) -> pd.DataFrame:
                 "fish_id": spec.fish_id,
                 "run_id": spec.run_id,
                 "modality": spec.modality,
-                "tail_angle_exists": bool(spec.tail_angle_path and spec.tail_angle_path.exists()),
+                "tail_angle_exists": bool(
+                    spec.tail_angle_path and spec.tail_angle_path.exists()
+                ),
                 "notes": spec.notes,
             }
         )
@@ -275,11 +288,15 @@ def get_dataset(dataset_key: str, project_root: Path | None = None) -> DatasetSp
     registry = dataset_registry(project_root)
     if dataset_key not in registry:
         available = ", ".join(registry)
-        raise ValueError(f"Unknown DATASET_KEY {dataset_key!r}. Available: {available}.")
+        raise ValueError(
+            f"Unknown DATASET_KEY {dataset_key!r}. Available: {available}."
+        )
     return registry[dataset_key]
 
 
-def load_traces(dataset_key: str, project_root: Path | None = None) -> tuple[DatasetSpec, np.ndarray]:
+def load_traces(
+    dataset_key: str, project_root: Path | None = None
+) -> tuple[DatasetSpec, np.ndarray]:
     spec = get_dataset(dataset_key, project_root)
     if not spec.trace_path.exists():
         raise FileNotFoundError(spec.trace_path)
@@ -297,7 +314,9 @@ def _load_trace_array(spec: DatasetSpec) -> np.ndarray:
         return np.asarray(np.load(spec.trace_path, allow_pickle=False), dtype=float)
     if spec.trace_path.suffix == ".pkl" and spec.group == "motorneurons":
         return _load_motorneurons_pickle_traces(spec)
-    raise ValueError(f"Unsupported trace file format for {spec.key}: {spec.trace_path.suffix}")
+    raise ValueError(
+        f"Unsupported trace file format for {spec.key}: {spec.trace_path.suffix}"
+    )
 
 
 def _load_motorneurons_pickle_traces(spec: DatasetSpec) -> np.ndarray:
@@ -308,7 +327,9 @@ def _load_motorneurons_pickle_traces(spec: DatasetSpec) -> np.ndarray:
     missing = required_columns.difference(payload.columns)
     if missing:
         missing_str = ", ".join(sorted(missing))
-        raise ValueError(f"{spec.trace_path} is missing required columns: {missing_str}.")
+        raise ValueError(
+            f"{spec.trace_path} is missing required columns: {missing_str}."
+        )
 
     fish_token = (spec.fish_id or "").lower()
     run_token = (spec.run_id or "").lower()
@@ -370,8 +391,12 @@ def _v2a_selected_cell_indices(spec: DatasetSpec) -> np.ndarray:
         raise FileNotFoundError(
             f"Missing emitter/receiver cell index files for {spec.key} in {run_dir}."
         )
-    emitter = np.asarray(np.load(emitter_path, allow_pickle=False), dtype=int).reshape(-1)
-    receiver = np.asarray(np.load(receiver_path, allow_pickle=False), dtype=int).reshape(-1)
+    emitter = np.asarray(np.load(emitter_path, allow_pickle=False), dtype=int).reshape(
+        -1
+    )
+    receiver = np.asarray(
+        np.load(receiver_path, allow_pickle=False), dtype=int
+    ).reshape(-1)
     ordered_unique = list(dict.fromkeys(np.concatenate([emitter, receiver]).tolist()))
     return np.asarray(ordered_unique, dtype=int)
 
@@ -380,7 +405,9 @@ def _v2a_bad_frame_indices(spec: DatasetSpec) -> np.ndarray:
     run_dir = spec.trace_path.parent
     info_path = _analysis_info_path(run_dir)
     if info_path is None:
-        raise FileNotFoundError(f"Missing *_analysis_info.json for {spec.key} in {run_dir}.")
+        raise FileNotFoundError(
+            f"Missing *_analysis_info.json for {spec.key} in {run_dir}."
+        )
     payload = json.loads(info_path.read_text(encoding="utf-8"))
     bad_frames = payload.get("bad_frames", [])
     if bad_frames is None:
@@ -417,7 +444,9 @@ def output_directory(
     dataset_group: str | None = None,
 ) -> Path:
     method = _validate_method(method)
-    project_root = resolve_project_root() if project_root is None else Path(project_root)
+    project_root = (
+        resolve_project_root() if project_root is None else Path(project_root)
+    )
     analysis_parts = [
         segment.strip()
         for segment in str(analysis_kind).replace("\\", "/").split("/")
@@ -464,7 +493,9 @@ def bss_decomposition_output_paths(
     }
 
 
-def bss_output_paths(spec: DatasetSpec, method: str, output_dir: Path) -> dict[str, Path]:
+def bss_output_paths(
+    spec: DatasetSpec, method: str, output_dir: Path
+) -> dict[str, Path]:
     method = _validate_method(method)
     output_dir = Path(output_dir)
     return {
@@ -487,13 +518,17 @@ def cleaned_trace_output_paths(
     }
 
 
-def cluster_selection_output_path(spec: DatasetSpec, method: str, output_dir: Path) -> Path:
+def cluster_selection_output_path(
+    spec: DatasetSpec, method: str, output_dir: Path
+) -> Path:
     method = _validate_method(method)
     stem = f"{sanitize_name(method)}_{sanitize_name(spec.data_name)}"
     return Path(output_dir) / "clusters" / f"cluster_selection_{stem}.json"
 
 
-def _legacy_cleaned_output_path(spec: DatasetSpec, method: str, output_dir: Path) -> Path:
+def _legacy_cleaned_output_path(
+    spec: DatasetSpec, method: str, output_dir: Path
+) -> Path:
     method = _validate_method(method)
     stem = f"{sanitize_name(method)}_{sanitize_name(spec.data_name)}"
     return Path(output_dir) / f"cleaned_{stem}.npy"
@@ -538,7 +573,9 @@ def load_bss_decomposition_outputs(
         dataset=spec,
         method=method,
         traces=traces,
-        ic_comps=np.asarray(np.load(paths["components"], allow_pickle=False), dtype=float),
+        ic_comps=np.asarray(
+            np.load(paths["components"], allow_pickle=False), dtype=float
+        ),
         IC_ft=np.asarray(np.load(paths["spectra"], allow_pickle=False), dtype=float),
         A=np.asarray(np.load(paths["mixing"], allow_pickle=False), dtype=float),
         mean=np.asarray(np.load(paths["mean"], allow_pickle=False), dtype=float),
@@ -574,13 +611,17 @@ def load_bss_outputs(
     paths = bss_output_paths(result.dataset, method, result.output_dir)
     saved_paths = dict(result.saved_paths)
     cleaned_path = paths["cleaned"]
-    legacy_cleaned_path = _legacy_cleaned_output_path(result.dataset, method, result.output_dir)
+    legacy_cleaned_path = _legacy_cleaned_output_path(
+        result.dataset, method, result.output_dir
+    )
     if not cleaned_path.exists() and legacy_cleaned_path.exists():
         cleaned_path = legacy_cleaned_path
     if not cleaned_path.exists():
         cleaned = np.dot(result.ic_comps, result.A.T) + result.mean
     else:
-        cleaned_saved = np.asarray(np.load(cleaned_path, allow_pickle=False), dtype=float)
+        cleaned_saved = np.asarray(
+            np.load(cleaned_path, allow_pickle=False), dtype=float
+        )
         saved_paths["cleaned"] = cleaned_path
         traces = result.traces
         if cleaned_saved.shape == traces.shape:
@@ -901,7 +942,9 @@ def pca_explained_variance_ratios(traces: np.ndarray) -> np.ndarray:
 def _dataset_metadata(spec: DatasetSpec) -> dict:
     metadata = asdict(spec)
     metadata["trace_path"] = str(spec.trace_path)
-    metadata["tail_angle_path"] = str(spec.tail_angle_path) if spec.tail_angle_path else None
+    metadata["tail_angle_path"] = (
+        str(spec.tail_angle_path) if spec.tail_angle_path else None
+    )
     return metadata
 
 
@@ -983,7 +1026,9 @@ def save_cleaned_trace_output(
     }
     if metadata:
         payload.update(metadata)
-    paths["cleaned_metadata"].write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    paths["cleaned_metadata"].write_text(
+        json.dumps(payload, indent=2), encoding="utf-8"
+    )
     return paths
 
 
@@ -1065,10 +1110,14 @@ def save_bss_outputs(
         "method": method,
         "dataset": metadata["dataset"],
         "input_shape_neurons_by_frames": metadata["input_shape_neurons_by_frames"],
-        "cleaned_saved_shape_neurons_by_frames": metadata["cleaned_saved_shape_neurons_by_frames"],
+        "cleaned_saved_shape_neurons_by_frames": metadata[
+            "cleaned_saved_shape_neurons_by_frames"
+        ],
         "reject_components": metadata["reject_components"],
     }
-    paths["cleaned_metadata"].write_text(json.dumps(cleaned_metadata, indent=2), encoding="utf-8")
+    paths["cleaned_metadata"].write_text(
+        json.dumps(cleaned_metadata, indent=2), encoding="utf-8"
+    )
     return paths
 
 
@@ -1174,5 +1223,7 @@ def sanitize_name(value: str) -> str:
 def _validate_method(method: str) -> str:
     method = str(method).lower()
     if method not in BSS_METHODS:
-        raise ValueError(f"Unknown BSS method {method!r}. Expected one of {BSS_METHODS}.")
+        raise ValueError(
+            f"Unknown BSS method {method!r}. Expected one of {BSS_METHODS}."
+        )
     return method

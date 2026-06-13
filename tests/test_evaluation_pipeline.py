@@ -40,7 +40,9 @@ class EvaluationPipelineTests(unittest.TestCase):
                 [0.1, 0.8, -0.5],
             ]
         )
-        self.traces = sources @ mixing.T + rng.normal(0, 0.03, (frames, mixing.shape[0]))
+        self.traces = sources @ mixing.T + rng.normal(
+            0, 0.03, (frames, mixing.shape[0])
+        )
         angle = 0.8 * sources[:, 0] + 0.2 * sources[:, 1]
         vigor = np.abs(np.diff(angle, prepend=angle[0]))
         threshold = float(np.quantile(vigor, 0.75))
@@ -84,8 +86,12 @@ class EvaluationPipelineTests(unittest.TestCase):
 
         np.testing.assert_allclose(original_model.mean, changed_model.mean)
         np.testing.assert_allclose(original_model.mixing, changed_model.mixing)
-        np.testing.assert_allclose(original_model.train_components, changed_model.train_components)
-        self.assertEqual(np.intersect1d(original_model.train_idx, fold.test_idx).size, 0)
+        np.testing.assert_allclose(
+            original_model.train_components, changed_model.train_components
+        )
+        self.assertEqual(
+            np.intersect1d(original_model.train_idx, fold.test_idx).size, 0
+        )
 
     def test_strict_sobi_uses_full_rank_by_default(self) -> None:
         fold = make_strict_folds(180, n_splits=3, gap=5, required_gap=5)[1]
@@ -287,7 +293,9 @@ class EvaluationPipelineTests(unittest.TestCase):
         self.assertIn("target_variant", result.behavior_metrics.columns)
         self.assertIn("null_strategy", result.behavior_metrics.columns)
         self.assertIn("spectral_power_retention", result.trace_metrics.columns)
-        raw_trace_metrics = result.trace_metrics[result.trace_metrics["variant"] == "raw"]
+        raw_trace_metrics = result.trace_metrics[
+            result.trace_metrics["variant"] == "raw"
+        ]
         np.testing.assert_allclose(raw_trace_metrics["global_pearson"], 1.0)
         np.testing.assert_allclose(raw_trace_metrics["retained_energy_fraction"], 1.0)
         np.testing.assert_allclose(raw_trace_metrics["spectral_power_retention"], 1.0)
@@ -357,8 +365,12 @@ class EvaluationPipelineTests(unittest.TestCase):
         result = run_evaluation(self.traces, self.targets, config)
 
         self.assertIn("q0.65_smooth3", set(result.behavior_metrics["target_variant"]))
-        nulls = result.behavior_metrics[result.behavior_metrics["comparison"] == "null_within"]
-        self.assertEqual(set(nulls["null_strategy"]), {"block_shuffle", "circular_shift"})
+        nulls = result.behavior_metrics[
+            result.behavior_metrics["comparison"] == "null_within"
+        ]
+        self.assertEqual(
+            set(nulls["null_strategy"]), {"block_shuffle", "circular_shift"}
+        )
 
     def test_artifact_probe_uses_configured_held_out_centers(self) -> None:
         config = EvaluationConfig(

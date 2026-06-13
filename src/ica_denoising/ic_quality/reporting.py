@@ -35,7 +35,9 @@ def save_ic_quality_outputs(
         "saved_at": datetime.now(timezone.utc).isoformat(),
         **dict(metadata or {}),
     }
-    paths["metadata"].write_text(json.dumps(payload, indent=2, default=str), encoding="utf-8")
+    paths["metadata"].write_text(
+        json.dumps(payload, indent=2, default=str), encoding="utf-8"
+    )
     write_html_quality_report(
         paths["html_report"],
         scored_table=scored_table,
@@ -75,7 +77,12 @@ def write_html_quality_report(
         _styled_table(scored_table),
     ]
     if validation_table is not None:
-        sections.extend(["<h2>Leave-one-IC-out validation</h2>", validation_table.to_html(index=False)])
+        sections.extend(
+            [
+                "<h2>Leave-one-IC-out validation</h2>",
+                validation_table.to_html(index=False),
+            ]
+        )
     sections.extend(
         [
             "<h2>Reviewer notes</h2>",
