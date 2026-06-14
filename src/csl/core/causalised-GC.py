@@ -73,7 +73,17 @@ def regression_residual(x: np.ndarray, z: np.ndarray) -> np.ndarray:
         z = z[np.newaxis, :]
 
     design = np.vstack([z, np.ones(z.shape[1])]).T
-    coef, *_ = np.linalg.lstsq(design, x, rcond=None)
+    try:
+        coef, *_ = np.linalg.lstsq(design, x, rcond=None)
+    except np.linalg.LinAlgError:
+        # NumPy's lstsq uses LAPACK gelsd (divide-and-conquer SVD), which can
+        # raise "SVD did not converge" on rank-deficient / ill-conditioned
+        # designs such as cluster-cleaned (low-rank) traces. Fall back to the
+        # gelsy driver (complete orthogonal factorization), which is robust to
+        # rank deficiency and returns the same least-squares residual.
+        from scipy.linalg import lstsq as _scipy_lstsq
+
+        coef, *_ = _scipy_lstsq(design, x, lapack_driver="gelsy")
     fitted = design @ coef
     return x - fitted
 
