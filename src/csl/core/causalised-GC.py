@@ -16,6 +16,7 @@ import numpy as np
 try:
     from numba import jit
 except Exception:  # pragma: no cover - numba is optional at runtime
+
     def jit(*_args, **_kwargs):  # type: ignore[misc]
         def decorator(func):
             return func
@@ -172,7 +173,9 @@ class GcStar:
 
         for i in range(n_rows):
             for j in range(self.n_neur):
-                pvals[i, j] = _perm_test_numba(shifted[i, :], shifted[j, :], self.n_perm)
+                pvals[i, j] = _perm_test_numba(
+                    shifted[i, :], shifted[j, :], self.n_perm
+                )
 
         return corr[:, : self.n_neur], pvals
 
@@ -255,7 +258,9 @@ class GcStar:
                 for i in range(2, max_lag + 1):
                     self.conn_mat = np.logical_or(self.conn_mat, all_[i])
         elif self.n_lags == 1:
-            self.conn_mat = np.logical_or(all_[0], all_[1]) if len(all_) > 1 else all_[0]
+            self.conn_mat = (
+                np.logical_or(all_[0], all_[1]) if len(all_) > 1 else all_[0]
+            )
         elif self.n_lags > 1:
             self.conn_mat = all_[0]
             max_lag = min(self.n_lags, len(all_) - 1)
@@ -298,7 +303,11 @@ class GcStar:
         fpr = fp / (fp + tn) if (fp + tn) else 0.0
         specificity = tn / (tn + fp) if (tn + fp) else 0.0
         balanced_accuracy = (specificity + recall) / 2
-        f1 = 2 * (precision * recall) / (precision + recall) if (precision + recall) else 0.0
+        f1 = (
+            2 * (precision * recall) / (precision + recall)
+            if (precision + recall)
+            else 0.0
+        )
         return np.array([accuracy, precision, recall, fpr, balanced_accuracy, f1])
 
     def compute_shd_sid(
@@ -315,10 +324,12 @@ class GcStar:
             try:
                 from cdt.metrics import SHD as _SHD, SID as _SID
             except Exception as exc:  # pragma: no cover - optional dependency
-                raise ImportError("cdt.metrics is required for SHD/SID computations.") from exc
+                raise ImportError(
+                    "cdt.metrics is required for SHD/SID computations."
+                ) from exc
             SHD, SID = _SHD, _SID
 
         target = truth.T if simulation else truth
         self.shd_ = SHD(target=target, pred=inferred, double_for_anticausal=False)
         # self.sid_ = SID(target=target, pred=inferred)
-        return self.shd_ #, self.sid_
+        return self.shd_  # , self.sid_

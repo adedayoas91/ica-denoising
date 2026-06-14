@@ -28,8 +28,12 @@ def save_adjacency_dict(
     if path.exists():
         payload = pd.read_pickle(path)
         if not isinstance(payload, dict):
-            raise TypeError(f"{path} exists but does not contain a dict keyed by P values.")
-        payload = {int(key): ensure_square_matrix(value) for key, value in payload.items()}
+            raise TypeError(
+                f"{path} exists but does not contain a dict keyed by P values."
+            )
+        payload = {
+            int(key): ensure_square_matrix(value) for key, value in payload.items()
+        }
     else:
         payload = {}
 
@@ -187,8 +191,10 @@ def plot_directed_graph(
     labels, colors = bilateral_labels(mid, matrix.shape[0])
     for node, center in enumerate(coords):
         color = (
-            DRIVER_COLOR if scaled[node] > 0
-            else RECEIVER_COLOR if scaled[node] < 0
+            DRIVER_COLOR
+            if scaled[node] > 0
+            else RECEIVER_COLOR
+            if scaled[node] < 0
             else BALANCED_COLOR
         )
         axis.scatter(*center, s=100 + 400 * abs(scaled[node]), c=color, zorder=2)
@@ -235,7 +241,9 @@ def load_motorneuron_mid(dataset_key: str, project_root: Path) -> int:
     required_columns = {"Fish", "Trace", "fluo_type", "mid"}
     missing = required_columns.difference(payload.columns)
     if missing:
-        raise ValueError(f"{spec.trace_path} is missing required columns: {sorted(missing)}.")
+        raise ValueError(
+            f"{spec.trace_path} is missing required columns: {sorted(missing)}."
+        )
 
     fish_token = (spec.fish_id or "").lower()
     run_token = (spec.run_id or "").lower()
@@ -262,15 +270,27 @@ def plot_motoneuron_connectivity_grid(
 ) -> tuple[plt.Figure, np.ndarray]:
     if variant_order is None:
         variant_order = tuple(connectivity_by_variant)
-    items = [(name, connectivity_by_variant[name]) for name in variant_order if name in connectivity_by_variant]
+    items = [
+        (name, connectivity_by_variant[name])
+        for name in variant_order
+        if name in connectivity_by_variant
+    ]
     if not items:
         raise ValueError("No connectivity matrices available to plot.")
 
-    fig, axes = plt.subplots(2, len(items), figsize=(4.2 * len(items), 8.4), squeeze=False)
+    fig, axes = plt.subplots(
+        2, len(items), figsize=(4.2 * len(items), 8.4), squeeze=False
+    )
     for column_index, (variant_name, matrix) in enumerate(items):
-        label = variant_titles.get(variant_name, variant_name) if variant_titles else variant_name
+        label = (
+            variant_titles.get(variant_name, variant_name)
+            if variant_titles
+            else variant_name
+        )
         square = ensure_square_matrix(matrix)
-        edge_count = int(np.count_nonzero(square > 0) - np.count_nonzero(np.diag(square) > 0))
+        edge_count = int(
+            np.count_nonzero(square > 0) - np.count_nonzero(np.diag(square) > 0)
+        )
         title = f"{label} {edge_count} edges"
         plot_matrix(matrix, mid, ax=axes[0, column_index])
         axes[0, column_index].set_title(title)
@@ -344,7 +364,9 @@ def load_bss_trace_variants(
                     "Run the recording's decomposition/cleaning notebook and save the cleaned outputs first."
                 )
         else:
-            default_cleaned = bss_output_paths(result.dataset, method, result.output_dir)["cleaned"]
+            default_cleaned = bss_output_paths(
+                result.dataset, method, result.output_dir
+            )["cleaned"]
             cleaned_path = (
                 default_cleaned.parent.parent
                 / "cleaned_variants"
@@ -353,7 +375,9 @@ def load_bss_trace_variants(
                 / default_cleaned.name
             )
             if cleaned_path.exists():
-                cleaned = _oriented_cleaned(np.load(cleaned_path, allow_pickle=False), result.traces)
+                cleaned = _oriented_cleaned(
+                    np.load(cleaned_path, allow_pickle=False), result.traces
+                )
             elif require_saved_cleaned:
                 raise FileNotFoundError(
                     f"Cleaned variant {cleaned_variant!r} for {dataset_key!r} and method {method!r} "

@@ -164,7 +164,9 @@ def analyze_with_gcstar_fcgc(
     return make_gcstar_analyzer("fcgc")(X, p_values)
 
 
-def analyze_with_user_method(X: np.ndarray, p_values: list[int]) -> dict[int, np.ndarray]:
+def analyze_with_user_method(
+    X: np.ndarray, p_values: list[int]
+) -> dict[int, np.ndarray]:
     """Placeholder for user-supplied methods.
 
     Replace this function body if you want to keep the external-method hook
@@ -192,7 +194,9 @@ def normalize_adjacency_output(
             for p_value, value in zip(p_values, raw, strict=True)
         }
     else:
-        raise TypeError("User method must return dict[p, adjacency] or a list of adjacency matrices.")
+        raise TypeError(
+            "User method must return dict[p, adjacency] or a list of adjacency matrices."
+        )
 
     required = {int(p_value) for p_value in p_values}
     missing = sorted(required.difference(output))
@@ -211,7 +215,9 @@ def normalize_adjacency_output(
     return output
 
 
-def load_external_method(spec: str) -> Callable[[np.ndarray, list[int]], dict[int, np.ndarray]]:
+def load_external_method(
+    spec: str,
+) -> Callable[[np.ndarray, list[int]], dict[int, np.ndarray]]:
     """Load an analyzer from ``module:function`` notation."""
 
     if ":" not in spec:
