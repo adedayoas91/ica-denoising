@@ -148,6 +148,7 @@ dependencies = [
     { name = "scikit-learn" },
     { name = "scipy" },
     { name = "seaborn" },
+    { name = "tigramite" },
 ]
 
 [package.metadata]
@@ -160,6 +161,7 @@ requires-dist = [
     { name = "scikit-learn" },
     { name = "scipy" },
     { name = "seaborn", specifier = ">=0.13.2" },
+    { name = "tigramite", specifier = ">=5.2.10.1" },
 ]
 
 [[package]]
@@ -701,6 +703,20 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/b7/4d/08c89e34946fce2aec4fbb45c9016efd5f4d7f24af8e5d93296e935631d8/threadpoolctl-3.6.0.tar.gz", hash = "sha256:8ab8b4aa3491d812b623328249fab5302a68d2d71745c8a4c719a2fcaba9f44e", size = 21274, upload-time = "2025-03-13T13:49:23.031Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/32/d5/f9a850d79b0851d1d4ef6456097579a9005b31fea68726a4ae5f2d82ddd9/threadpoolctl-3.6.0-py3-none-any.whl", hash = "sha256:43a0b8fd5a2928500110039e43a5eed8480b918967083ea48dc3ab9f13c4a7fb", size = 18638, upload-time = "2025-03-13T13:49:21.846Z" },
+]
+
+[[package]]
+name = "tigramite"
+version = "5.2.10.1"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "numpy" },
+    { name = "scipy" },
+    { name = "six" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/b8/00/bd255715ea168a353dd8a7bdcd6de05383a047965eb2b09a3b5e5801143c/tigramite-5.2.10.1.tar.gz", hash = "sha256:376bff91e8461bd082cfb97bd6c635999efc554913afe2470369a2716a344724", size = 320565, upload-time = "2026-01-14T22:43:25.39Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/3a/71/6282e828cbe155f2fc4a81e5a5f12cba72ce739a2ec88a790c5070cec52f/tigramite-5.2.10.1-py3-none-any.whl", hash = "sha256:1bba99ba05c3ba90bdc235b92e9d65d10b1744af73f9e0070c1d7204e6c81ddc", size = 314729, upload-time = "2026-01-14T22:43:23.812Z" },
 ]
 
 [[package]]
