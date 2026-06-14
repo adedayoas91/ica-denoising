@@ -283,19 +283,40 @@ def plot_motoneuron_connectivity_grid(
     return fig, axes
 
 
+def _oriented_cleaned(saved: np.ndarray, traces: np.ndarray) -> np.ndarray:
+    """Return a cleaned trace in the same orientation as ``BSSRunResult.cleaned``."""
+    saved = np.asarray(saved, dtype=float)
+    if saved.shape == traces.shape:
+        return saved.T
+    if saved.shape == traces.T.shape:
+        return saved
+    raise ValueError(
+        f"Cleaned-variant trace has shape {saved.shape}; expected "
+        f"{traces.shape} or {traces.T.shape}."
+    )
+
+
 def load_bss_trace_variants(
     dataset_key: str,
     project_root: Path,
     *,
     methods: Iterable[str] | None = None,
     require_saved_cleaned: bool = True,
+    output_data_name_override: str | None = None,
+    cleaned_variant: str | None = None,
 ) -> list[dict[str, Any]]:
-    from ica_denoising.bss_notebook import BSS_METHODS, load_bss_outputs, load_traces
+    from ica_denoising.bss_notebook import (
+        BSS_METHODS,
+        bss_output_paths,
+        load_bss_outputs,
+        load_traces,
+    )
 
     if methods is None:
         methods = BSS_METHODS
 
     spec, raw_traces = load_traces(dataset_key, project_root)
+    output_data_name = output_data_name_override or spec.data_name
     variants: list[dict[str, Any]] = [
         {
             "variant_name": "raw",
@@ -312,22 +333,47 @@ def load_bss_trace_variants(
             dataset_key,
             method,
             project_root=project_root,
-            output_data_name_override=spec.data_name,
+            output_data_name_override=output_data_name,
         )
-        cleaned_path = result.saved_paths.get("cleaned")
-        if require_saved_cleaned and cleaned_path is None:
-            raise FileNotFoundError(
-                f"Saved cleaned trace for {dataset_key!r} and method {method!r} was not found. "
-                "Run notebooks/motorneurons/decomposition.ipynb and save the cleaned outputs first."
+        if cleaned_variant is None:
+            cleaned = result.cleaned
+            cleaned_path = result.saved_paths.get("cleaned")
+            if require_saved_cleaned and cleaned_path is None:
+                raise FileNotFoundError(
+                    f"Saved cleaned trace for {dataset_key!r} and method {method!r} was not found. "
+                    "Run the recording's decomposition/cleaning notebook and save the cleaned outputs first."
+                )
+        else:
+            default_cleaned = bss_output_paths(result.dataset, method, result.output_dir)["cleaned"]
+            cleaned_path = (
+                default_cleaned.parent.parent
+                / "cleaned_variants"
+                / cleaned_variant
+                / "cleaned"
+                / default_cleaned.name
             )
+            if cleaned_path.exists():
+                cleaned = _oriented_cleaned(np.load(cleaned_path, allow_pickle=False), result.traces)
+            elif require_saved_cleaned:
+                raise FileNotFoundError(
+                    f"Cleaned variant {cleaned_variant!r} for {dataset_key!r} and method {method!r} "
+                    f"was not found at {cleaned_path}. Run the recording's "
+                    "cluster_clean_reconstruct.ipynb first."
+                )
+            else:
+                cleaned = result.cleaned
+                cleaned_path = result.saved_paths.get("cleaned")
+        variant_label = f"{spec.data_name}: {method}"
+        if cleaned_variant is not None:
+            variant_label = f"{variant_label} ({cleaned_variant})"
         variants.append(
             {
                 "variant_name": f"{method}_cleaned",
-                "variant_label": f"{spec.data_name}: {method}",
+                "variant_label": variant_label,
                 "source_method": str(method),
                 "source_path": str(cleaned_path) if cleaned_path is not None else None,
                 "dataset": result.dataset,
-                "traces": np.asarray(result.cleaned.T, dtype=float),
+                "traces": np.asarray(cleaned.T, dtype=float),
             }
         )
 
