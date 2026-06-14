@@ -84,7 +84,9 @@ def _score_columns(table: pd.DataFrame, columns: tuple[str, ...]) -> pd.Series:
         return pd.Series(np.zeros(len(table)), index=table.index, dtype=float)
     ranks = []
     for column in present:
-        values = pd.to_numeric(table[column], errors="coerce").replace([np.inf, -np.inf], np.nan)
+        values = pd.to_numeric(table[column], errors="coerce").replace(
+            [np.inf, -np.inf], np.nan
+        )
         values = values.fillna(values.median() if values.notna().any() else 0.0)
         ranks.append(values.rank(method="average", pct=True))
     return pd.concat(ranks, axis=1).mean(axis=1).astype(float)
@@ -93,11 +95,20 @@ def _score_columns(table: pd.DataFrame, columns: tuple[str, ...]) -> pd.Series:
 def _recommendation(row: pd.Series, config: ICScoringConfig) -> str:
     artifact_score = float(row.get("artifact_score", 0.0))
     protect_score = float(row.get("protect_score", 0.0))
-    if artifact_score >= config.artifact_score_drop and protect_score <= config.protect_score_drop_max:
+    if (
+        artifact_score >= config.artifact_score_drop
+        and protect_score <= config.protect_score_drop_max
+    ):
         return "drop"
-    if protect_score >= config.protect_score_keep and artifact_score < config.artifact_score_drop:
+    if (
+        protect_score >= config.protect_score_keep
+        and artifact_score < config.artifact_score_drop
+    ):
         return "keep"
-    if artifact_score >= config.artifact_score_review or protect_score >= config.protect_score_keep:
+    if (
+        artifact_score >= config.artifact_score_review
+        or protect_score >= config.protect_score_keep
+    ):
         return "review"
     return "keep"
 

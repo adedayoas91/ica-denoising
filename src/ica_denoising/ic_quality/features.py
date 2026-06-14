@@ -42,7 +42,11 @@ def compute_ic_features(
     ics = _as_2d_float(ic_comps, "ic_comps")
     n_frames, n_components = ics.shape
     mixing_arr = None if mixing is None else _validate_mixing(mixing, n_components)
-    positions = None if roi_positions is None else _validate_positions(roi_positions, mixing_arr)
+    positions = (
+        None
+        if roi_positions is None
+        else _validate_positions(roi_positions, mixing_arr)
+    )
     targets = _normalize_behavior_targets(behavior_targets, n_frames)
 
     rows: list[dict[str, float | int | str | None]] = []
@@ -115,7 +119,9 @@ def _spectral_features(trace: np.ndarray, config: ICFeatureConfig) -> dict[str, 
         "low_freq_power_ratio": float(np.sum(power[low_mask]) / total_power),
         "high_freq_power_ratio": float(np.sum(power[high_mask]) / total_power),
         "spectral_entropy": float(entropy_norm),
-        "narrowband_ratio": float(np.max(power) / max(np.median(power), np.finfo(float).eps)),
+        "narrowband_ratio": float(
+            np.max(power) / max(np.median(power), np.finfo(float).eps)
+        ),
     }
 
 
@@ -135,18 +141,26 @@ def _mixing_features(
         "loading_l1": l1,
         "loading_l2": l2,
         "loading_hoyer_sparsity": _hoyer_sparsity(abs_loadings),
-        "max_median_loading_ratio": float(np.max(abs_loadings) / max(median, np.finfo(float).eps)),
-        "strong_loading_fraction": float(np.mean(abs_loadings >= strong_threshold)) if n else 0.0,
+        "max_median_loading_ratio": float(
+            np.max(abs_loadings) / max(median, np.finfo(float).eps)
+        ),
+        "strong_loading_fraction": float(np.mean(abs_loadings >= strong_threshold))
+        if n
+        else 0.0,
     }
     if roi_positions is not None and l1 > 0:
         weights = abs_loadings / l1
         centroid = weights @ roi_positions
         distances = np.linalg.norm(roi_positions - centroid, axis=1)
-        result["weighted_spatial_extent"] = float(np.sqrt(np.sum(weights * distances**2)))
+        result["weighted_spatial_extent"] = float(
+            np.sqrt(np.sum(weights * distances**2))
+        )
     return result
 
 
-def _behavior_features(trace: np.ndarray, targets: Mapping[str, np.ndarray]) -> dict[str, float]:
+def _behavior_features(
+    trace: np.ndarray, targets: Mapping[str, np.ndarray]
+) -> dict[str, float]:
     result: dict[str, float] = {}
     correlations: list[float] = []
     for name, target in targets.items():
@@ -173,7 +187,9 @@ def _normalize_behavior_targets(
             if hasattr(behavior_targets, name)
         }
     return {
-        str(name): _align_1d_target(np.asarray(values, dtype=float).reshape(-1), n_frames)
+        str(name): _align_1d_target(
+            np.asarray(values, dtype=float).reshape(-1), n_frames
+        )
         for name, values in raw.items()
     }
 
@@ -243,7 +259,9 @@ def _pearson(x: np.ndarray, y: np.ndarray) -> float:
     x = np.asarray(x, dtype=float).reshape(-1)
     y = np.asarray(y, dtype=float).reshape(-1)
     if x.size != y.size:
-        raise ValueError(f"Pearson inputs must match lengths, got {x.size} and {y.size}.")
+        raise ValueError(
+            f"Pearson inputs must match lengths, got {x.size} and {y.size}."
+        )
     x_std = np.std(x)
     y_std = np.std(y)
     if x_std == 0 or y_std == 0 or not np.isfinite(x_std) or not np.isfinite(y_std):
@@ -259,7 +277,9 @@ def _excess_kurtosis(values: np.ndarray) -> float:
 
 def _window_variance_ratio(values: np.ndarray, window_count: int) -> float:
     windows = np.array_split(values, max(int(window_count), 1))
-    variances = np.array([np.var(window) for window in windows if window.size], dtype=float)
+    variances = np.array(
+        [np.var(window) for window in windows if window.size], dtype=float
+    )
     if variances.size == 0:
         return 1.0
     return float(np.max(variances) / max(np.min(variances), np.finfo(float).eps))

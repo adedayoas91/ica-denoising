@@ -52,7 +52,9 @@ class ICQualityTests(unittest.TestCase):
         self.assertEqual(len(table), 4)
         high_ratio = table.loc[table["component"] == 1, "high_freq_power_ratio"].iloc[0]
         slow_ratio = table.loc[table["component"] == 0, "high_freq_power_ratio"].iloc[0]
-        behavior_corr = table.loc[table["component"] == 3, "max_abs_behavior_corr"].iloc[0]
+        behavior_corr = table.loc[
+            table["component"] == 3, "max_abs_behavior_corr"
+        ].iloc[0]
         self.assertGreater(high_ratio, slow_ratio)
         self.assertGreater(behavior_corr, 0.95)
 
@@ -77,7 +79,9 @@ class ICQualityTests(unittest.TestCase):
         self.assertNotEqual(by_component.loc[2, "recommendation"], "drop")
 
     def test_leave_one_out_validation_and_reconstruction_shape(self) -> None:
-        reconstructed = reconstruct_with_rejected(self.ic_comps, self.mixing, self.mean, [1])
+        reconstructed = reconstruct_with_rejected(
+            self.ic_comps, self.mixing, self.mean, [1]
+        )
         self.assertEqual(reconstructed.shape, self.reference.shape)
         validation = leave_one_ic_out_validation(
             self.ic_comps,
@@ -105,7 +109,9 @@ class ICQualityTests(unittest.TestCase):
             self.assertIn("features", result.saved_paths)
             self.assertTrue(result.saved_paths["features"].exists())
             self.assertTrue(result.saved_paths["html_report"].exists())
-            self.assertEqual(result.saved_paths["html_report"].name, "ic_quality_report.html")
+            self.assertEqual(
+                result.saved_paths["html_report"].name, "ic_quality_report.html"
+            )
 
 
 if __name__ == "__main__":

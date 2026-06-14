@@ -154,14 +154,22 @@ def _infer_variant_name_from_cleaned_path(
 
     # Incremental layout:
     # <method>/incremental/<selection_id>/cleaned/<cleaned_file>.npy
-    if len(rel_parts) >= 5 and rel_parts[1] == "incremental" and rel_parts[-2] == "cleaned":
+    if (
+        len(rel_parts) >= 5
+        and rel_parts[1] == "incremental"
+        and rel_parts[-2] == "cleaned"
+    ):
         method_name = rel_parts[0]
         selection_id = rel_parts[2]
         return f"{method_name}/{selection_id}/{stem}"
 
     # Cleaned-variant layout:
     # <method>/cleaned_variants/<selection_id>/cleaned/<cleaned_file>.npy
-    if len(rel_parts) >= 5 and rel_parts[1] == "cleaned_variants" and rel_parts[-2] == "cleaned":
+    if (
+        len(rel_parts) >= 5
+        and rel_parts[1] == "cleaned_variants"
+        and rel_parts[-2] == "cleaned"
+    ):
         method_name = rel_parts[0]
         selection_id = rel_parts[2].removeprefix("cluster_")
         return f"{method_name}/{selection_id}/{stem}"
@@ -196,7 +204,9 @@ def _load_trace(path: Path) -> np.ndarray:
     return np.asarray(arr, dtype=float)
 
 
-def orient_time_by_neurons(arr: np.ndarray, expected_frames: int | None = None) -> np.ndarray:
+def orient_time_by_neurons(
+    arr: np.ndarray, expected_frames: int | None = None
+) -> np.ndarray:
     """Return traces as time x neurons.
 
     The v2a files are mostly neurons x frames, while some reconstructed arrays
@@ -207,7 +217,9 @@ def orient_time_by_neurons(arr: np.ndarray, expected_frames: int | None = None) 
             return arr
         if arr.shape[1] == expected_frames:
             return arr.T
-        raise ValueError(f"Cannot orient shape {arr.shape} to {expected_frames} frames.")
+        raise ValueError(
+            f"Cannot orient shape {arr.shape} to {expected_frames} frames."
+        )
     if arr.shape[0] < arr.shape[1]:
         return arr.T
     return arr
@@ -283,7 +295,9 @@ def make_behavior_target_variants(
             raise ValueError("smooth windows must be at least 1.")
     for quantile in quantiles:
         for window in windows:
-            vigor = moving_average(base_vigor, window) if window > 1 else base_vigor.copy()
+            vigor = (
+                moving_average(base_vigor, window) if window > 1 else base_vigor.copy()
+            )
             threshold, bout_state = _compute_bout_threshold_and_state(
                 vigor,
                 quantile,
@@ -321,8 +335,12 @@ def _compute_bout_threshold_and_state(
 ) -> tuple[float, np.ndarray]:
     vigor = np.asarray(vigor, dtype=float).reshape(-1)
     if bout_threshold_override not in _BOUT_THRESHOLD_OVERRIDES:
-        allowed = ", ".join(repr(value) for value in sorted(_BOUT_THRESHOLD_OVERRIDES, key=str))
-        raise ValueError(f"Unknown bout_threshold_override={bout_threshold_override!r}. Allowed: {allowed}.")
+        allowed = ", ".join(
+            repr(value) for value in sorted(_BOUT_THRESHOLD_OVERRIDES, key=str)
+        )
+        raise ValueError(
+            f"Unknown bout_threshold_override={bout_threshold_override!r}. Allowed: {allowed}."
+        )
 
     if bout_threshold_override == "positive_vigor_quantile":
         positive_vigor = vigor[vigor > 0]
@@ -336,7 +354,9 @@ def _compute_bout_threshold_and_state(
     return threshold, (vigor >= threshold).astype(int)
 
 
-def bin_signal_to_frames(signal: np.ndarray, n_frames: int, reducer: str = "mean") -> np.ndarray:
+def bin_signal_to_frames(
+    signal: np.ndarray, n_frames: int, reducer: str = "mean"
+) -> np.ndarray:
     signal = np.asarray(signal, dtype=float).reshape(-1)
     edges = np.linspace(0, signal.size, n_frames + 1)
     edges = np.rint(edges).astype(int)
@@ -381,7 +401,9 @@ def make_lagged_design(
     if target_shift < 0:
         raise ValueError("target_shift must be non-negative.")
     if traces.shape[0] != target.shape[0]:
-        raise ValueError(f"Trace length {traces.shape[0]} and target length {target.shape[0]} differ.")
+        raise ValueError(
+            f"Trace length {traces.shape[0]} and target length {target.shape[0]} differ."
+        )
 
     max_lag = max(lags)
     times = np.arange(max_lag, traces.shape[0] - target_shift)
@@ -545,7 +567,9 @@ def run_decoding_experiment(
         pred_rows.extend(preds)
 
     metrics = pd.DataFrame(metric_rows)
-    predictions = pd.concat(pred_rows, ignore_index=True) if pred_rows else pd.DataFrame()
+    predictions = (
+        pd.concat(pred_rows, ignore_index=True) if pred_rows else pd.DataFrame()
+    )
     summary = summarize_metrics(metrics)
     return DecodingResult(metrics=metrics, predictions=predictions, summary=summary)
 
@@ -583,7 +607,9 @@ def blocked_folds(
         yield fold, train_idx, test_idx
 
 
-def block_shuffle(y: np.ndarray, block_size: int, rng: np.random.Generator) -> np.ndarray:
+def block_shuffle(
+    y: np.ndarray, block_size: int, rng: np.random.Generator
+) -> np.ndarray:
     y = np.asarray(y)
     if block_size <= 1:
         shuffled = y.copy()
@@ -642,7 +668,9 @@ def _evaluate_pair(
     metric_rows: list[dict[str, object]] = []
     pred_rows: list[pd.DataFrame] = []
     for fold, train_idx, test_idx in folds:
-        x_train, x_test = standardize_train_test(train_features[train_idx], test_features[test_idx])
+        x_train, x_test = standardize_train_test(
+            train_features[train_idx], test_features[test_idx]
+        )
         y_train, y_test = y[train_idx], y[test_idx]
         if task == "regression":
             pred, score = _fit_predict_regression(x_train, y_train, x_test, ridge_alpha)
@@ -695,7 +723,9 @@ def _evaluate_pair(
     return metric_rows, pred_rows
 
 
-def standardize_train_test(x_train: np.ndarray, x_test: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+def standardize_train_test(
+    x_train: np.ndarray, x_test: np.ndarray
+) -> tuple[np.ndarray, np.ndarray]:
     mean = x_train.mean(axis=0)
     std = x_train.std(axis=0)
     std = np.where(std > 0, std, 1.0)
@@ -801,7 +831,8 @@ def summarize_metrics(metrics: pd.DataFrame) -> pd.DataFrame:
         .reset_index()
     )
     summary.columns = [
-        "_".join(col).rstrip("_") if isinstance(col, tuple) else col for col in summary.columns
+        "_".join(col).rstrip("_") if isinstance(col, tuple) else col
+        for col in summary.columns
     ]
     return summary
 
@@ -843,17 +874,27 @@ def summarize_trace_preservation(
                 "reference": reference.name,
                 "n_frames": int(variant.traces.shape[0]),
                 "n_neurons": int(variant.traces.shape[1]),
-                "global_pearson": pearson_1d(reference.traces.ravel(), variant.traces.ravel()),
+                "global_pearson": pearson_1d(
+                    reference.traces.ravel(), variant.traces.ravel()
+                ),
                 "neuron_pearson_mean": _nan_stat(neuron_corr, np.nanmean),
                 "neuron_pearson_median": _nan_stat(neuron_corr, np.nanmedian),
-                "neuron_pearson_q25": _nan_stat(neuron_corr, lambda x: np.nanquantile(x, 0.25)),
-                "neuron_pearson_q75": _nan_stat(neuron_corr, lambda x: np.nanquantile(x, 0.75)),
+                "neuron_pearson_q25": _nan_stat(
+                    neuron_corr, lambda x: np.nanquantile(x, 0.25)
+                ),
+                "neuron_pearson_q75": _nan_stat(
+                    neuron_corr, lambda x: np.nanquantile(x, 0.75)
+                ),
                 "rmse_mean": float(np.mean(rmse_by_neuron)),
                 "nrmse_mean": _nan_stat(nrmse_by_neuron, np.nanmean),
                 "mean_abs_delta": float(np.mean(np.abs(delta))),
                 "variance_ratio_median": _nan_stat(variance_ratio, np.nanmedian),
-                "variance_ratio_q25": _nan_stat(variance_ratio, lambda x: np.nanquantile(x, 0.25)),
-                "variance_ratio_q75": _nan_stat(variance_ratio, lambda x: np.nanquantile(x, 0.75)),
+                "variance_ratio_q25": _nan_stat(
+                    variance_ratio, lambda x: np.nanquantile(x, 0.25)
+                ),
+                "variance_ratio_q75": _nan_stat(
+                    variance_ratio, lambda x: np.nanquantile(x, 0.75)
+                ),
             }
         )
     return pd.DataFrame(rows)
@@ -898,7 +939,11 @@ def rank_representative_neurons(
             "inspection_score": score,
         }
     )
-    return rows.sort_values("inspection_score", ascending=False).head(n).reset_index(drop=True)
+    return (
+        rows.sort_values("inspection_score", ascending=False)
+        .head(n)
+        .reset_index(drop=True)
+    )
 
 
 def tidy_decoding_summary(summary: pd.DataFrame) -> pd.DataFrame:
@@ -940,7 +985,9 @@ def make_analysis_scorecard(
     reference_name: str = "raw",
 ) -> AnalysisScorecard:
     """Build a compact table joining trace preservation and within-decoding metrics."""
-    trace_summary = summarize_trace_preservation(variants, reference_name=reference_name)
+    trace_summary = summarize_trace_preservation(
+        variants, reference_name=reference_name
+    )
     tidy_summary = tidy_decoding_summary(decoding_summary)
     within = tidy_summary[
         (tidy_summary["comparison"] == "within")
@@ -953,7 +1000,9 @@ def make_analysis_scorecard(
         values="mean",
         aggfunc="first",
     )
-    metric_table.columns = [f"{target}_{metric}" for target, metric in metric_table.columns]
+    metric_table.columns = [
+        f"{target}_{metric}" for target, metric in metric_table.columns
+    ]
     metric_table = metric_table.reset_index()
     scorecard = trace_summary.merge(metric_table, on="variant", how="left")
     return AnalysisScorecard(
@@ -982,7 +1031,9 @@ def make_behavior_preservation_scorecard(
     if missing:
         raise ValueError(f"summary is missing required columns: {missing}")
 
-    versions = _ordered_versions(summary["test_version"].dropna().unique(), reference_name)
+    versions = _ordered_versions(
+        summary["test_version"].dropna().unique(), reference_name
+    )
     rows = []
     for version in versions:
         row: dict[str, object] = {"method": version}
@@ -1024,7 +1075,9 @@ def make_behavior_preservation_scorecard(
                 and np.isfinite(null_score)
                 and raw_score > null_score
             ):
-                preservation = 100.0 * (method_score - null_score) / (raw_score - null_score)
+                preservation = (
+                    100.0 * (method_score - null_score) / (raw_score - null_score)
+                )
                 row[preservation_col] = preservation
                 preservation_scores.append(float(preservation))
 
@@ -1035,7 +1088,9 @@ def make_behavior_preservation_scorecard(
 
     scorecard = pd.DataFrame(rows)
     if variants is not None:
-        trace_summary = summarize_trace_preservation(variants, reference_name=reference_name)
+        trace_summary = summarize_trace_preservation(
+            variants, reference_name=reference_name
+        )
         trace_cols = [
             "variant",
             "neuron_pearson_median",
@@ -1043,7 +1098,9 @@ def make_behavior_preservation_scorecard(
             "variance_ratio_median",
             "mean_abs_delta",
         ]
-        available_trace_cols = [col for col in trace_cols if col in trace_summary.columns]
+        available_trace_cols = [
+            col for col in trace_cols if col in trace_summary.columns
+        ]
         scorecard = scorecard.merge(
             trace_summary[available_trace_cols].rename(columns={"variant": "method"}),
             on="method",
@@ -1051,11 +1108,15 @@ def make_behavior_preservation_scorecard(
         )
 
     scorecard = _label_preservation_recommendations(scorecard, reference_name)
-    return scorecard.sort_values(
-        ["method_is_reference", "behavioral_preservation_index"],
-        ascending=[False, False],
-        na_position="last",
-    ).drop(columns=["method_is_reference"]).reset_index(drop=True)
+    return (
+        scorecard.sort_values(
+            ["method_is_reference", "behavioral_preservation_index"],
+            ascending=[False, False],
+            na_position="last",
+        )
+        .drop(columns=["method_is_reference"])
+        .reset_index(drop=True)
+    )
 
 
 def plot_behavior_trace_evidence(
@@ -1079,12 +1140,22 @@ def plot_behavior_trace_evidence(
 
     reference = _get_variant(variants, reference_name)
     if neuron is None:
-        neuron = int(rank_representative_neurons(variants, reference_name=reference_name, n=1)["neuron"].iloc[0])
+        neuron = int(
+            rank_representative_neurons(variants, reference_name=reference_name, n=1)[
+                "neuron"
+            ].iloc[0]
+        )
     if neuron < 0 or neuron >= reference.traces.shape[1]:
-        raise ValueError(f"neuron must be in [0, {reference.traces.shape[1] - 1}], got {neuron}.")
+        raise ValueError(
+            f"neuron must be in [0, {reference.traces.shape[1] - 1}], got {neuron}."
+        )
 
-    start, stop = _resolve_behavior_window(targets, reference.traces.shape[0], start, stop, window_size)
-    selected = _order_variants(variants, method_order=method_order, reference_name=reference_name)
+    start, stop = _resolve_behavior_window(
+        targets, reference.traces.shape[0], start, stop, window_size
+    )
+    selected = _order_variants(
+        variants, method_order=method_order, reference_name=reference_name
+    )
     frames = np.arange(start, stop)
 
     fig, axes = plt.subplots(
@@ -1095,7 +1166,9 @@ def plot_behavior_trace_evidence(
         gridspec_kw={"height_ratios": [4.0, 1.1, 0.8]},
     )
     trace_ax, vigor_ax, bout_ax = axes
-    colors = _method_color_map([variant.name for variant in selected], reference_name=reference_name)
+    colors = _method_color_map(
+        [variant.name for variant in selected], reference_name=reference_name
+    )
     offset_step = 3.0
 
     for offset, variant in enumerate(reversed(selected)):
@@ -1120,7 +1193,9 @@ def plot_behavior_trace_evidence(
     vigor_ax.axhline(targets.bout_threshold, color="0.5", lw=0.8, ls="--")
     vigor_ax.set_ylabel("tail vigor")
 
-    bout_ax.fill_between(frames, 0, targets.bout_state[start:stop], step="mid", color="0.25", alpha=0.35)
+    bout_ax.fill_between(
+        frames, 0, targets.bout_state[start:stop], step="mid", color="0.25", alpha=0.35
+    )
     bout_ax.set_ylim(-0.05, 1.05)
     bout_ax.set_yticks([0, 1])
     bout_ax.set_ylabel("bout")
@@ -1143,11 +1218,15 @@ def plot_behavior_preservation_summary(
     be called after the behavior-decoding experiment has produced ``metrics``
     and ``summary``.
     """
-    scorecard = make_behavior_preservation_scorecard(summary, variants=variants, reference_name=reference_name)
+    scorecard = make_behavior_preservation_scorecard(
+        summary, variants=variants, reference_name=reference_name
+    )
     method_order = scorecard["method"].tolist()
     colors = _method_color_map(method_order, reference_name=reference_name)
 
-    fig, axes = plt.subplots(2, 3, figsize=(16, 8), gridspec_kw={"height_ratios": [1.0, 0.9]})
+    fig, axes = plt.subplots(
+        2, 3, figsize=(16, 8), gridspec_kw={"height_ratios": [1.0, 0.9]}
+    )
     _plot_fold_metric_panel(
         metrics,
         summary,
@@ -1313,10 +1392,13 @@ def _label_preservation_recommendations(
     scorecard = scorecard.copy()
     scorecard["method_is_reference"] = scorecard["method"] == reference_name
     scorecard["recommendation_label"] = "insufficient data"
-    scorecard.loc[scorecard["method_is_reference"], "recommendation_label"] = "raw reference"
+    scorecard.loc[scorecard["method_is_reference"], "recommendation_label"] = (
+        "raw reference"
+    )
 
     method_scores = scorecard.loc[
-        ~scorecard["method_is_reference"] & scorecard["behavioral_preservation_index"].notna(),
+        ~scorecard["method_is_reference"]
+        & scorecard["behavioral_preservation_index"].notna(),
         "behavioral_preservation_index",
     ]
     best_index = method_scores.idxmax() if not method_scores.empty else None
@@ -1353,9 +1435,15 @@ def _plot_fold_metric_panel(
     for x_pos, method in zip(x_positions, method_order):
         row_comparison = "within" if method == reference_name else comparison
         train_version = method if row_comparison == "within" else reference_name
-        values = _fold_metric_values(metrics, target, row_comparison, train_version, method, metric)
+        values = _fold_metric_values(
+            metrics, target, row_comparison, train_version, method, metric
+        )
         if values.size:
-            jitter = np.linspace(-0.11, 0.11, values.size) if values.size > 1 else np.array([0.0])
+            jitter = (
+                np.linspace(-0.11, 0.11, values.size)
+                if values.size > 1
+                else np.array([0.0])
+            )
             ax.scatter(
                 np.full(values.size, x_pos) + jitter,
                 values,
@@ -1365,8 +1453,12 @@ def _plot_fold_metric_panel(
                 linewidths=0,
             )
 
-        mean = _summary_metric_value(summary, target, row_comparison, train_version, method, metric)
-        std = _summary_metric_std(summary, target, row_comparison, train_version, method, metric)
+        mean = _summary_metric_value(
+            summary, target, row_comparison, train_version, method, metric
+        )
+        std = _summary_metric_std(
+            summary, target, row_comparison, train_version, method, metric
+        )
         if np.isfinite(mean):
             yerr = std if np.isfinite(std) else None
             ax.errorbar(
@@ -1381,11 +1473,15 @@ def _plot_fold_metric_panel(
                 lw=1.0,
             )
 
-    raw_mean = _summary_metric_value(summary, target, "within", reference_name, reference_name, metric)
+    raw_mean = _summary_metric_value(
+        summary, target, "within", reference_name, reference_name, metric
+    )
     if np.isfinite(raw_mean):
         ax.axhline(raw_mean, color="black", lw=0.8, alpha=0.45)
 
-    raw_null = _summary_metric_value(summary, target, "null_within", reference_name, reference_name, metric)
+    raw_null = _summary_metric_value(
+        summary, target, "null_within", reference_name, reference_name, metric
+    )
     if np.isfinite(raw_null):
         ax.axhline(raw_null, color="0.55", lw=0.8, ls="--")
     elif null_line is not None:
@@ -1394,7 +1490,11 @@ def _plot_fold_metric_panel(
     ax.set_title(title)
     ax.set_ylabel(ylabel)
     ax.set_xticks(x_positions)
-    ax.set_xticklabels([_display_method_name(method) for method in method_order], rotation=90, ha="right")
+    ax.set_xticklabels(
+        [_display_method_name(method) for method in method_order],
+        rotation=90,
+        ha="right",
+    )
     ax.grid(axis="y", color="0.9", lw=0.8)
 
 
@@ -1446,7 +1546,13 @@ def _plot_preservation_index_panel(
     ax.grid(axis="x", color="0.9", lw=0.8)
 
     if reference_name in set(plot_df["method"]):
-        ax.text(100, y_pos[plot_df["method"].tolist().index(reference_name)], " raw", va="center", fontsize=8)
+        ax.text(
+            100,
+            y_pos[plot_df["method"].tolist().index(reference_name)],
+            " raw",
+            va="center",
+            fontsize=8,
+        )
 
 
 def _plot_scorecard_table(scorecard: pd.DataFrame, ax) -> None:
@@ -1457,9 +1563,9 @@ def _plot_scorecard_table(scorecard: pd.DataFrame, ax) -> None:
     table_df = scorecard[columns].copy()
     table_df["method"] = table_df["method"].map(_display_method_name)
     if "behavioral_preservation_index" in table_df:
-        table_df["behavioral_preservation_index"] = table_df["behavioral_preservation_index"].map(
-            lambda value: "" if pd.isna(value) else f"{value:.1f}"
-        )
+        table_df["behavioral_preservation_index"] = table_df[
+            "behavioral_preservation_index"
+        ].map(lambda value: "" if pd.isna(value) else f"{value:.1f}")
     if "neuron_pearson_median" in table_df:
         table_df["neuron_pearson_median"] = table_df["neuron_pearson_median"].map(
             lambda value: "" if pd.isna(value) else f"{value:.2f}"
@@ -1489,7 +1595,9 @@ def _order_variants(
     method_order: Sequence[str],
     reference_name: str,
 ) -> list[TraceVariant]:
-    names = _ordered_versions([variant.name for variant in variants], reference_name, method_order)
+    names = _ordered_versions(
+        [variant.name for variant in variants], reference_name, method_order
+    )
     lookup = {variant.name: variant for variant in variants}
     return [lookup[name] for name in names]
 
@@ -1519,7 +1627,9 @@ def _method_order_index(name: str, method_order: Sequence[str]) -> int:
     return len(method_order)
 
 
-def _method_color_map(methods: Iterable[str], reference_name: str = "raw") -> dict[str, str]:
+def _method_color_map(
+    methods: Iterable[str], reference_name: str = "raw"
+) -> dict[str, str]:
     canonical_colors = {
         "raw": "black",
         "fastica": "tab:blue",
@@ -1595,10 +1705,14 @@ def _get_variant(variants: list[TraceVariant], name: str) -> TraceVariant:
         if variant.name == name:
             return variant
     available = ", ".join(variant.name for variant in variants) or "<none>"
-    raise ValueError(f"Unknown trace variant {name!r}. Available variants: {available}.")
+    raise ValueError(
+        f"Unknown trace variant {name!r}. Available variants: {available}."
+    )
 
 
-def _validate_matching_trace_shape(reference: TraceVariant, variant: TraceVariant) -> None:
+def _validate_matching_trace_shape(
+    reference: TraceVariant, variant: TraceVariant
+) -> None:
     if reference.traces.shape != variant.traces.shape:
         raise ValueError(
             f"{variant.name} has shape {variant.traces.shape}; "
@@ -1631,7 +1745,9 @@ def pearson_1d(a: np.ndarray, b: np.ndarray) -> float:
 def _safe_divide(numerator: np.ndarray, denominator: np.ndarray) -> np.ndarray:
     numerator = np.asarray(numerator, dtype=float)
     denominator = np.asarray(denominator, dtype=float)
-    out = np.full(np.broadcast_shapes(numerator.shape, denominator.shape), np.nan, dtype=float)
+    out = np.full(
+        np.broadcast_shapes(numerator.shape, denominator.shape), np.nan, dtype=float
+    )
     return np.divide(numerator, denominator, out=out, where=denominator != 0)
 
 

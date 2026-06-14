@@ -50,7 +50,9 @@ def make_paired_windows(
 ) -> tuple[np.ndarray, np.ndarray, dict[str, np.ndarray], np.ndarray]:
     traces = np.asarray(traces, dtype=float)
     if traces.ndim != 2:
-        raise ValueError(f"traces must be 2D (time x neurons), got shape {traces.shape}.")
+        raise ValueError(
+            f"traces must be 2D (time x neurons), got shape {traces.shape}."
+        )
     if config.window < 2:
         raise ValueError("config.window must be at least 2.")
     if target_shift < 0:
@@ -108,10 +110,14 @@ def fit_causal_state_model(
 
     for variant in variants:
         for shift in config.target_shifts:
-            x0, x1, target_map, times = make_paired_windows(variant.traces, targets, config, shift)
+            x0, x1, target_map, times = make_paired_windows(
+                variant.traces, targets, config, shift
+            )
             x0_flat = x0.reshape(x0.shape[0], -1)
             x1_flat = x1.reshape(x1.shape[0], -1)
-            folds = list(blocked_folds(x0.shape[0], n_splits=config.n_splits, gap=config.gap))
+            folds = list(
+                blocked_folds(x0.shape[0], n_splits=config.n_splits, gap=config.gap)
+            )
 
             for fold_id, train_idx, test_idx in folds:
                 scaler = _fit_standardizer(x0_flat[train_idx])
@@ -120,7 +126,10 @@ def fit_causal_state_model(
                 x1_train = _apply_standardizer(x1_flat[train_idx], scaler)
                 x1_test = _apply_standardizer(x1_flat[test_idx], scaler)
 
-                pca = PCA(n_components=min(config.latent_dim, x0_train.shape[1]), random_state=config.random_state)
+                pca = PCA(
+                    n_components=min(config.latent_dim, x0_train.shape[1]),
+                    random_state=config.random_state,
+                )
                 z0_train = pca.fit_transform(x0_train)
                 z0_test = pca.transform(x0_test)
                 z1_obs_train = pca.transform(x1_train)
@@ -132,11 +141,17 @@ def fit_causal_state_model(
                 z1_pred_test = z0_test + transition.predict(z0_test)
                 dynamic_mse = float(mean_squared_error(z1_obs_test, z1_pred_test))
                 persistence_mse = float(mean_squared_error(z1_obs_test, z0_test))
-                mean_state = np.broadcast_to(z1_obs_train.mean(axis=0), z1_obs_test.shape)
+                mean_state = np.broadcast_to(
+                    z1_obs_train.mean(axis=0), z1_obs_test.shape
+                )
                 mean_state_mse = float(mean_squared_error(z1_obs_test, mean_state))
                 held_out_latent_variance = float(np.mean(np.var(z1_obs_test, axis=0)))
-                dynamic_mse_normalized = _safe_ratio(dynamic_mse, held_out_latent_variance)
-                persistence_improvement = 1.0 - _safe_ratio(dynamic_mse, persistence_mse)
+                dynamic_mse_normalized = _safe_ratio(
+                    dynamic_mse, held_out_latent_variance
+                )
+                persistence_improvement = 1.0 - _safe_ratio(
+                    dynamic_mse, persistence_mse
+                )
 
                 y_angle_train = target_map["angle"][train_idx]
                 y_angle_test = target_map["angle"][test_idx]
@@ -211,8 +226,12 @@ def fit_causal_state_model(
                         "variant": variant.name,
                         "target_shift": shift,
                         "fold": int(fold_id),
-                        "residual_vigor_corr": _safe_pearson(residual_norm, y_vigor_test),
-                        "residual_bout_corr": _safe_pearson(residual_norm, y_bout_test.astype(float)),
+                        "residual_vigor_corr": _safe_pearson(
+                            residual_norm, y_vigor_test
+                        ),
+                        "residual_bout_corr": _safe_pearson(
+                            residual_norm, y_bout_test.astype(float)
+                        ),
                     }
                 )
 
@@ -379,7 +398,9 @@ def _apply_standardizer(
     return (x - mean) / std
 
 
-def _standardize_train_test(x_train: np.ndarray, x_test: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+def _standardize_train_test(
+    x_train: np.ndarray, x_test: np.ndarray
+) -> tuple[np.ndarray, np.ndarray]:
     scaler = _fit_standardizer(x_train)
     return _apply_standardizer(x_train, scaler), _apply_standardizer(x_test, scaler)
 

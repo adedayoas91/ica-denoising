@@ -48,13 +48,19 @@ class BSSNotebookTests(unittest.TestCase):
             self.assertEqual(spec.trace_path, trace)
             self.assertEqual(spec.tail_angle_path, tail)
 
-    def test_dataset_registry_falls_back_to_legacy_root_and_prefers_matching_names(self) -> None:
+    def test_dataset_registry_falls_back_to_legacy_root_and_prefers_matching_names(
+        self,
+    ) -> None:
         with TemporaryDirectory() as tmp:
             root = Path(tmp)
-            run_dir = root / "data" / "v2a-RSNs" / "new_data_09112022" / "220210_F1_run6"
+            run_dir = (
+                root / "data" / "v2a-RSNs" / "new_data_09112022" / "220210_F1_run6"
+            )
             run_dir.mkdir(parents=True)
             correct_trace = run_dir / "220210_F1_F1_run6_cells_fluorescence_signals.npy"
-            legacy_trace = run_dir / "220127_F4_F4_run2_after_dec_cells_fluorescence_signals.npy"
+            legacy_trace = (
+                run_dir / "220127_F4_F4_run2_after_dec_cells_fluorescence_signals.npy"
+            )
             correct_tail = run_dir / "220210_F1_F1_run6_tail_angle.npy"
             legacy_tail = run_dir / "220127_F4_F4_run2_after_dec_tail_angle.npy"
             np.save(correct_trace, np.ones((3, 20)))
@@ -170,7 +176,10 @@ class BSSNotebookTests(unittest.TestCase):
                 random_state=0,
             )
 
-            with patch("ica_denoising.bss_notebook.dataset_registry", return_value={spec.key: spec}):
+            with patch(
+                "ica_denoising.bss_notebook.dataset_registry",
+                return_value={spec.key: spec},
+            ):
                 result = load_bss_decomposition_outputs(
                     spec.key,
                     "fastica",
@@ -219,7 +228,10 @@ class BSSNotebookTests(unittest.TestCase):
                 random_state=0,
             )
 
-            with patch("ica_denoising.bss_notebook.dataset_registry", return_value={spec.key: spec}):
+            with patch(
+                "ica_denoising.bss_notebook.dataset_registry",
+                return_value={spec.key: spec},
+            ):
                 result = load_bss_decomposition_outputs(spec.key, "fastica", root)
 
             self.assertEqual(result.output_dir, output_dir)
@@ -345,7 +357,10 @@ class BSSNotebookTests(unittest.TestCase):
                 random_state=0,
             )
 
-            with patch("ica_denoising.bss_notebook.dataset_registry", return_value={spec.key: spec}):
+            with patch(
+                "ica_denoising.bss_notebook.dataset_registry",
+                return_value={spec.key: spec},
+            ):
                 result = load_bss_outputs(spec.key, "fastica", root)
 
             self.assertNotIn("cleaned", result.saved_paths)
@@ -392,7 +407,10 @@ class BSSNotebookTests(unittest.TestCase):
                 random_state=0,
             )
 
-            with patch("ica_denoising.bss_notebook.dataset_registry", return_value={spec.key: spec}):
+            with patch(
+                "ica_denoising.bss_notebook.dataset_registry",
+                return_value={spec.key: spec},
+            ):
                 result = load_bss_outputs(spec.key, "fastica", root)
 
             self.assertIn("cleaned", result.saved_paths)
@@ -459,7 +477,10 @@ class BSSNotebookTests(unittest.TestCase):
             traces = rng.normal(size=(5, 80))
             np.save(spec.trace_path, traces)
 
-            with patch("ica_denoising.bss_notebook.dataset_registry", return_value={spec.key: spec}):
+            with patch(
+                "ica_denoising.bss_notebook.dataset_registry",
+                return_value={spec.key: spec},
+            ):
                 result = run_bss_method(
                     spec.key,
                     "sobi",

@@ -53,10 +53,14 @@ class ICAUtilsTests(unittest.TestCase):
 
     def test_reject_components_from_cluster_selection(self) -> None:
         predictions = np.array([0, 1, 1, 2, 2, 2])
-        rejected = reject_components_from_cluster_selection(predictions, reject_clusters=[1])
+        rejected = reject_components_from_cluster_selection(
+            predictions, reject_clusters=[1]
+        )
         self.assertListEqual(rejected.tolist(), [1, 2])
 
-        rejected = reject_components_from_cluster_selection(predictions, keep_clusters=[2])
+        rejected = reject_components_from_cluster_selection(
+            predictions, keep_clusters=[2]
+        )
         self.assertListEqual(rejected.tolist(), [0, 1, 2])
 
     def test_reject_components_selection_reject_and_keep_is_invalid(self) -> None:
@@ -72,10 +76,10 @@ class ICAUtilsTests(unittest.TestCase):
         # Cluster 1 has highest power, then cluster 2, then cluster 0.
         spectra = np.array(
             [
-                [1.0, 1.0, 1.0, 1.0],   # c0
-                [10.0, 8.0, 9.0, 10.0], # c1
-                [9.0, 7.0, 8.0, 9.0],   # c1
-                [3.0, 2.0, 2.5, 3.0],   # c2
+                [1.0, 1.0, 1.0, 1.0],  # c0
+                [10.0, 8.0, 9.0, 10.0],  # c1
+                [9.0, 7.0, 8.0, 9.0],  # c1
+                [3.0, 2.0, 2.5, 3.0],  # c2
             ]
         )
         predictions = np.array([0, 1, 1, 2])
@@ -95,8 +99,8 @@ class ICAUtilsTests(unittest.TestCase):
         spectra = np.array(
             [
                 [100.0, 1.0, 1.0, 1.0],  # c0
-                [9.0, 9.0, 9.0, 9.0],    # c1
-                [4.0, 4.0, 4.0, 4.0],    # c2
+                [9.0, 9.0, 9.0, 9.0],  # c1
+                [4.0, 4.0, 4.0, 4.0],  # c2
             ]
         )
         predictions = np.array([0, 1, 2])

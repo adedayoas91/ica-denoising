@@ -19,7 +19,9 @@ from ica_denoising.behavior_decoding import (
 
 
 class BehaviorDecodingLoadTests(unittest.TestCase):
-    def test_classification_metrics_marks_single_class_test_fold_as_undefined(self) -> None:
+    def test_classification_metrics_marks_single_class_test_fold_as_undefined(
+        self,
+    ) -> None:
         metrics = classification_metrics(
             np.zeros(5, dtype=int),
             np.zeros(5, dtype=int),
@@ -48,7 +50,10 @@ class BehaviorDecodingLoadTests(unittest.TestCase):
                 dataset_name="demo_data",
             )
 
-            self.assertEqual([variant.name for variant in variants], ["raw", "fastica/cleaned_fastica_demo_data"])
+            self.assertEqual(
+                [variant.name for variant in variants],
+                ["raw", "fastica/cleaned_fastica_demo_data"],
+            )
             np.testing.assert_allclose(variants[1].traces, (raw * 0.5).T)
 
     def test_load_trace_variants_discovers_cluster_cleaned_variants(self) -> None:
@@ -61,7 +66,13 @@ class BehaviorDecodingLoadTests(unittest.TestCase):
 
             cleaned_root = root / "outputs" / "linear" / "demo" / "demo_data"
             final_dir = cleaned_root / "fastica" / "cleaned"
-            variant_dir = cleaned_root / "fastica" / "cleaned_variants" / "cluster_keep_top_02" / "cleaned"
+            variant_dir = (
+                cleaned_root
+                / "fastica"
+                / "cleaned_variants"
+                / "cluster_keep_top_02"
+                / "cleaned"
+            )
             final_dir.mkdir(parents=True)
             variant_dir.mkdir(parents=True)
             np.save(final_dir / "cleaned_fastica_demo_data.npy", raw * 0.5)
@@ -113,7 +124,9 @@ class BehaviorDecodingLoadTests(unittest.TestCase):
             np.testing.assert_allclose(variants[0].traces, filtered_raw.T)
             np.testing.assert_allclose(variants[1].traces, (filtered_raw * 0.5).T)
 
-    def test_behavior_target_variants_use_configured_quantiles_and_windows(self) -> None:
+    def test_behavior_target_variants_use_configured_quantiles_and_windows(
+        self,
+    ) -> None:
         tail_angle = np.array([0.0, 1.0, 3.0, 2.0, 6.0, 7.0, 7.5, 9.0])
         targets = make_behavior_targets(
             tail_angle,

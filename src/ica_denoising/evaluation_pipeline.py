@@ -25,8 +25,15 @@ from ica_denoising.behavior_decoding import (
     standardize_train_test,
     summarize_trace_preservation,
 )
-from ica_denoising.bss_notebook import DEFAULT_PCA_VARIANCE_THRESHOLD, resolve_bss_component_selection
-from ica_denoising.causal_behavior_decoding import CausalStateConfig, make_paired_windows, minimum_causal_gap
+from ica_denoising.bss_notebook import (
+    DEFAULT_PCA_VARIANCE_THRESHOLD,
+    resolve_bss_component_selection,
+)
+from ica_denoising.causal_behavior_decoding import (
+    CausalStateConfig,
+    make_paired_windows,
+    minimum_causal_gap,
+)
 from ica_denoising.core.ica_utils import bss_dec, rank_clusters_by_mean_log_psd
 from ica_denoising.evaluation_diagnostics import (
     cluster_stability_table,
@@ -77,7 +84,9 @@ class FittedBSSModel:
     ) -> np.ndarray:
         components = self.transform(traces)
         if keep_components is not None:
-            keep = np.asarray(sorted(set(int(value) for value in keep_components)), dtype=int)
+            keep = np.asarray(
+                sorted(set(int(value) for value in keep_components)), dtype=int
+            )
             if keep.size and (keep.min() < 0 or keep.max() >= components.shape[1]):
                 raise ValueError("keep_components contains an out-of-range component.")
             mask = np.zeros(components.shape[1], dtype=bool)
@@ -267,7 +276,9 @@ def contiguous_index_segments(indices: Sequence[int]) -> tuple[np.ndarray, ...]:
         return ()
     indices = np.unique(indices)
     split_points = np.flatnonzero(np.diff(indices) > 1) + 1
-    return tuple(np.asarray(segment, dtype=int) for segment in np.split(indices, split_points))
+    return tuple(
+        np.asarray(segment, dtype=int) for segment in np.split(indices, split_points)
+    )
 
 
 def fit_bss_model(
@@ -354,7 +365,9 @@ def fit_subspace_model(
         basis = pca.components_.T
     elif kind == "random_subspace":
         rng = np.random.default_rng(random_state)
-        basis, _ = np.linalg.qr(rng.standard_normal((traces.shape[1], rank)), mode="reduced")
+        basis, _ = np.linalg.qr(
+            rng.standard_normal((traces.shape[1], rank)), mode="reduced"
+        )
     else:
         raise ValueError("kind must be 'pca' or 'random_subspace'.")
     return FittedSubspaceModel(
@@ -607,7 +620,9 @@ def select_components(
         return np.arange(n_components, dtype=int)
     if keep_cluster_count is None:
         raise ValueError(f"keep_cluster_count is required for strategy {strategy!r}.")
-    keep_cluster_count = max(1, min(int(keep_cluster_count), len(selection.cluster_order)))
+    keep_cluster_count = max(
+        1, min(int(keep_cluster_count), len(selection.cluster_order))
+    )
     order = np.asarray(selection.cluster_order, dtype=int)
     if strategy == "high_frequency":
         order = order[::-1]
@@ -615,7 +630,9 @@ def select_components(
         order = np.random.default_rng(random_state).permutation(order)
     elif strategy == "energy_matched_random":
         reference_clusters = set(selection.cluster_order[:keep_cluster_count])
-        reference_components = np.flatnonzero(np.isin(selection.labels, list(reference_clusters)))
+        reference_components = np.flatnonzero(
+            np.isin(selection.labels, list(reference_clusters))
+        )
         target_energy = float(selection.component_energy[reference_components].sum())
         component_order = np.random.default_rng(random_state).permutation(n_components)
         cumulative = np.cumsum(selection.component_energy[component_order])
@@ -653,8 +670,13 @@ def select_components_by_ic_quality(
     *,
     strategy: str,
 ) -> np.ndarray:
-    if "component" not in quality_table.columns or "recommendation" not in quality_table.columns:
-        raise ValueError("quality_table must contain component and recommendation columns.")
+    if (
+        "component" not in quality_table.columns
+        or "recommendation" not in quality_table.columns
+    ):
+        raise ValueError(
+            "quality_table must contain component and recommendation columns."
+        )
     if strategy == "ic_quality_nonartifact":
         mask = quality_table["recommendation"].astype(str) != "drop"
     elif strategy == "ic_quality_strict_keep":
@@ -808,7 +830,9 @@ def run_evaluation(
         )
         causal_rows.extend(fold_causal)
         embedding_rows.extend(fold_embeddings)
-        sufficiency = _evaluate_causal_sufficiency_variants(variants, targets, fold, config)
+        sufficiency = _evaluate_causal_sufficiency_variants(
+            variants, targets, fold, config
+        )
         if not sufficiency.empty:
             sufficiency_frames.append(sufficiency)
         artifact_probe = _evaluate_artifact_probe_variants(variants, fold, config)
@@ -903,9 +927,8 @@ def _held_out_trace_metrics(
         noverlap=config.welch_noverlap,
     )
     frequencies = np.linspace(0.0, config.sample_rate_hz / 2.0, raw_spectra.shape[1])
-    low_frequency_mask = (
-        (frequencies >= config.ranking_fmin_hz)
-        & (frequencies <= config.ranking_fmax_hz)
+    low_frequency_mask = (frequencies >= config.ranking_fmin_hz) & (
+        frequencies <= config.ranking_fmax_hz
     )
     if not np.any(low_frequency_mask):
         raise ValueError(
@@ -955,7 +978,9 @@ def _held_out_trace_metrics(
                 "low_frequency_fmax_hz": float(config.ranking_fmax_hz),
             }
         )
-    metrics = summary.merge(pd.DataFrame(spectral_rows), on="variant", validate="one_to_one")
+    metrics = summary.merge(
+        pd.DataFrame(spectral_rows), on="variant", validate="one_to_one"
+    )
     family_by_name = {variant.name: variant.family for variant in variants}
     metrics.insert(0, "family", metrics["variant"].map(family_by_name))
     metrics.insert(0, "fold", int(fold.fold))
@@ -990,7 +1015,9 @@ def make_fold_variants(
     stability_assignment_frames: list[pd.DataFrame] = []
     energy_match_targets: dict[str, float] = {}
 
-    for method, bss_name, n_components, pca_variance_threshold in _bss_fit_specs(config):
+    for method, bss_name, n_components, pca_variance_threshold in _bss_fit_specs(
+        config
+    ):
         model = fit_bss_model(
             traces,
             fold.train_idx,
@@ -1042,7 +1069,8 @@ def make_fold_variants(
                 assignments.insert(0, "fold", fold.fold)
                 stability_assignment_frames.append(assignments)
         cluster_rank = {
-            cluster: rank for rank, cluster in enumerate(selection.cluster_order, start=1)
+            cluster: rank
+            for rank, cluster in enumerate(selection.cluster_order, start=1)
         }
         quality_table = (
             ic_quality_table_for_bss_model(
@@ -1099,8 +1127,16 @@ def make_fold_variants(
             [
                 decomposition_audit,
                 _audit_row(fold, bss_name, "component_psd", model.train_idx, False),
-                _audit_row(fold, bss_name, "spectral_feature_clustering", model.train_idx, False),
-                _audit_row(fold, bss_name, "component_selection", model.train_idx, False),
+                _audit_row(
+                    fold,
+                    bss_name,
+                    "spectral_feature_clustering",
+                    model.train_idx,
+                    False,
+                ),
+                _audit_row(
+                    fold, bss_name, "component_selection", model.train_idx, False
+                ),
             ]
         )
         if config.ic_quality_selection_strategies:
@@ -1140,15 +1176,15 @@ def make_fold_variants(
                                 "pca_components": model.pca_components,
                                 "pca_variance_threshold": model.pca_variance_threshold,
                                 "pca_explained_variance_ratio": model.pca_explained_variance_ratio,
-                        "component_selection_mode": model.component_selection_mode,
-                        "strategy": strategy,
-                        "keep_cluster_count": keep_count,
-                        "keep_components": keep.tolist(),
-                        "fit_indices": "training_frames_only",
-                        "random_state": seed,
-                    },
-                )
-            )
+                                "component_selection_mode": model.component_selection_mode,
+                                "strategy": strategy,
+                                "keep_cluster_count": keep_count,
+                                "keep_components": keep.tolist(),
+                                "fit_indices": "training_frames_only",
+                                "random_state": seed,
+                            },
+                        )
+                    )
                     audit_rows.append(
                         _audit_row(fold, name, "reconstruction", model.train_idx, False)
                     )
@@ -1159,7 +1195,9 @@ def make_fold_variants(
                         numerator = float(
                             np.sum((train_reconstruction - model.mean) ** 2)
                         )
-                        denominator = float(np.sum((traces[model.train_idx] - model.mean) ** 2))
+                        denominator = float(
+                            np.sum((traces[model.train_idx] - model.mean) ** 2)
+                        )
                         energy_match_targets[name] = _safe_ratio(numerator, denominator)
 
         for strategy in config.ic_quality_selection_strategies:
@@ -1185,7 +1223,9 @@ def make_fold_variants(
                     },
                 )
             )
-            audit_rows.append(_audit_row(fold, name, "reconstruction", model.train_idx, False))
+            audit_rows.append(
+                _audit_row(fold, name, "reconstruction", model.train_idx, False)
+            )
 
     for method in config.benchmark_latent_methods:
         for rank_value in config.benchmark_latent_ranks:
@@ -1204,8 +1244,12 @@ def make_fold_variants(
                 "fit_indices": "training_frames_only",
             }
             if latent_model.train_shift is not None:
-                metadata["train_nonnegative_shift_min"] = float(latent_model.train_shift.min())
-                metadata["train_nonnegative_shift_max"] = float(latent_model.train_shift.max())
+                metadata["train_nonnegative_shift_min"] = float(
+                    latent_model.train_shift.min()
+                )
+                metadata["train_nonnegative_shift_max"] = float(
+                    latent_model.train_shift.max()
+                )
             variants.append(
                 FoldVariant(
                     name=name,
@@ -1216,7 +1260,9 @@ def make_fold_variants(
                 )
             )
             audit_rows.append(
-                _audit_row(fold, name, "latent_fit_reconstruct", latent_model.train_idx, False)
+                _audit_row(
+                    fold, name, "latent_fit_reconstruct", latent_model.train_idx, False
+                )
             )
 
     baseline_ranks = config.baseline_ranks or (min(traces.shape),)
@@ -1231,9 +1277,13 @@ def make_fold_variants(
         )
         name = f"pca/rank{rank}"
         variants.append(
-            FoldVariant(name, "baseline", pca_model.reconstruct(traces), pca_model.train_idx)
+            FoldVariant(
+                name, "baseline", pca_model.reconstruct(traces), pca_model.train_idx
+            )
         )
-        audit_rows.append(_audit_row(fold, name, "pca_fit_reconstruct", fold.train_idx, False))
+        audit_rows.append(
+            _audit_row(fold, name, "pca_fit_reconstruct", fold.train_idx, False)
+        )
 
         for seed in config.selection_random_seeds:
             random_model = fit_subspace_model(
@@ -1253,7 +1303,9 @@ def make_fold_variants(
                 )
             )
             audit_rows.append(
-                _audit_row(fold, name, "random_subspace_reconstruct", fold.train_idx, False)
+                _audit_row(
+                    fold, name, "random_subspace_reconstruct", fold.train_idx, False
+                )
             )
 
     finite_energy_targets = {
@@ -1261,12 +1313,16 @@ def make_fold_variants(
         for name, fraction in energy_match_targets.items()
         if np.isfinite(fraction)
     }
-    energy_models = fit_pca_energy_models(
-        traces,
-        fold.train_idx,
-        finite_energy_targets,
-        random_state=config.random_state,
-    ) if finite_energy_targets else {}
+    energy_models = (
+        fit_pca_energy_models(
+            traces,
+            fold.train_idx,
+            finite_energy_targets,
+            random_state=config.random_state,
+        )
+        if finite_energy_targets
+        else {}
+    )
     energy_by_rank: dict[int, dict[str, object]] = {}
     for source_name, (pca_model, matched_fraction) in energy_models.items():
         rank = pca_model.basis.shape[1]
@@ -1298,7 +1354,9 @@ def make_fold_variants(
             )
         )
         audit_rows.append(
-            _audit_row(fold, name, "pca_energy_match_fit_reconstruct", fold.train_idx, False)
+            _audit_row(
+                fold, name, "pca_energy_match_fit_reconstruct", fold.train_idx, False
+            )
         )
 
     for cutoff in config.lowpass_cutoffs_hz:
@@ -1319,7 +1377,9 @@ def make_fold_variants(
             )
         )
         audit_rows.append(
-            _audit_row(fold, name, "fixed_causal_filter", np.array([], dtype=int), False)
+            _audit_row(
+                fold, name, "fixed_causal_filter", np.array([], dtype=int), False
+            )
         )
     return (
         variants,
@@ -1399,9 +1459,12 @@ def _evaluate_behavior_variants(
     predictions: list[pd.DataFrame] = []
     raw = next(variant for variant in variants if variant.name == "raw")
 
-    for target_variant, bout_quantile, smooth_window, vigor in _behavior_target_variants(
-        targets, config
-    ):
+    for (
+        target_variant,
+        bout_quantile,
+        smooth_window,
+        vigor,
+    ) in _behavior_target_variants(targets, config):
         fold_threshold = float(np.quantile(vigor[fold.train_idx], bout_quantile))
         fold_targets = {
             "tail_vigor": ("regression", vigor),
@@ -1450,7 +1513,9 @@ def _evaluate_behavior_variants(
 
                 if variant.name != raw.name:
                     raw_design, raw_y, raw_times = designs[(raw.name, target_name)]
-                    if not np.array_equal(times, raw_times) or not np.array_equal(y, raw_y):
+                    if not np.array_equal(times, raw_times) or not np.array_equal(
+                        y, raw_y
+                    ):
                         raise ValueError("Raw and variant target alignment differs.")
                     transfer_row, transfer_prediction = _evaluate_decoding_pair(
                         raw_design,
@@ -1467,7 +1532,9 @@ def _evaluate_behavior_variants(
                         fold=fold.fold,
                         ridge_alpha=config.decoder_ridge_alpha,
                     )
-                    _annotate_behavior_outputs(transfer_row, transfer_prediction, metadata)
+                    _annotate_behavior_outputs(
+                        transfer_row, transfer_prediction, metadata
+                    )
                     transfer_row["bout_threshold"] = (
                         fold_threshold if task == "classification" else np.nan
                     )
@@ -1540,10 +1607,14 @@ def _behavior_target_variants(
             if key in seen:
                 continue
             seen.add(key)
-            name = "primary" if key == (float(config.bout_quantile), 1) else (
-                f"q{float(quantile):.3g}_smooth{window}"
+            name = (
+                "primary"
+                if key == (float(config.bout_quantile), 1)
+                else (f"q{float(quantile):.3g}_smooth{window}")
             )
-            vigor = targets.vigor if window == 1 else moving_average(targets.vigor, window)
+            vigor = (
+                targets.vigor if window == 1 else moving_average(targets.vigor, window)
+            )
             variants.append((name, float(quantile), window, vigor))
     return tuple(variants)
 
@@ -1699,7 +1770,9 @@ def _evaluate_causal_variants(
     rows: list[dict[str, object]] = []
     embeddings: list[dict[str, object]] = []
     causal = config.causal
-    fold_threshold = float(np.quantile(targets.vigor[fold.train_idx], config.bout_quantile))
+    fold_threshold = float(
+        np.quantile(targets.vigor[fold.train_idx], config.bout_quantile)
+    )
     for variant in variants:
         for shift in causal.target_shifts:
             x0, x1, target_map, times = make_paired_windows(
@@ -1846,7 +1919,9 @@ def _evaluate_causal_sufficiency_variants(
             augmented_test = np.hstack([z_test, x0_test])
             for target_name in target_names:
                 if target_name not in target_map:
-                    raise ValueError(f"Unknown causal sufficiency target: {target_name}")
+                    raise ValueError(
+                        f"Unknown causal sufficiency target: {target_name}"
+                    )
                 y_train = target_map[target_name][train_mask]
                 y_test = target_map[target_name][test_mask]
                 base = Ridge(alpha=causal.ridge_alpha)
@@ -1856,7 +1931,9 @@ def _evaluate_causal_sufficiency_variants(
                 augmented.fit(augmented_train, y_train)
                 augmented_pred = augmented.predict(augmented_test)
                 base_rmse = float(np.sqrt(mean_squared_error(y_test, base_pred)))
-                augmented_rmse = float(np.sqrt(mean_squared_error(y_test, augmented_pred)))
+                augmented_rmse = float(
+                    np.sqrt(mean_squared_error(y_test, augmented_pred))
+                )
                 rows.append(
                     {
                         "variant": variant.name,
@@ -1897,7 +1974,9 @@ def _evaluate_artifact_probe_variants(
     half_width = int(config.artifact_probe_half_width)
     if half_width < 1:
         raise ValueError("artifact_probe_half_width must be at least 1.")
-    center_lookup = {int(frame): position for position, frame in enumerate(fold.test_idx)}
+    center_lookup = {
+        int(frame): position for position, frame in enumerate(fold.test_idx)
+    }
     center_pairs = [
         (int(center), int(center_lookup[int(center)]))
         for center in config.artifact_probe_centers
@@ -1934,7 +2013,9 @@ def _evaluate_artifact_probe_variants(
         table = table.rename(columns={"center": "local_center"})
         rows.append(table)
     return (
-        pd.concat(rows, ignore_index=True).reindex(columns=_empty_artifact_probe_metrics().columns)
+        pd.concat(rows, ignore_index=True).reindex(
+            columns=_empty_artifact_probe_metrics().columns
+        )
         if rows
         else _empty_artifact_probe_metrics()
     )
@@ -1952,8 +2033,10 @@ def _causal_masks(
     train_mask = np.isin(target_times, fold.train_idx) & np.all(
         np.isin(neural_times, fold.train_idx), axis=1
     )
-    test_mask = np.isin(target_times, fold.test_idx) & np.isin(times, fold.test_idx) & ~np.any(
-        np.isin(neural_times, fold.train_idx), axis=1
+    test_mask = (
+        np.isin(target_times, fold.test_idx)
+        & np.isin(times, fold.test_idx)
+        & ~np.any(np.isin(neural_times, fold.train_idx), axis=1)
     )
     if not np.any(train_mask) or not np.any(test_mask):
         raise ValueError("No strict causal-state samples remain for this fold.")
@@ -2112,4 +2195,6 @@ def _validate_targets(targets: BehaviorTargets, n_frames: int) -> None:
     for name in ("angle", "vigor", "bout_state"):
         values = np.asarray(getattr(targets, name))
         if values.shape[0] != n_frames:
-            raise ValueError(f"targets.{name} has length {values.shape[0]}, expected {n_frames}.")
+            raise ValueError(
+                f"targets.{name} has length {values.shape[0]}, expected {n_frames}."
+            )

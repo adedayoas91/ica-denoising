@@ -20,7 +20,10 @@ from ica_denoising.bss_notebook import (
     load_traces,
     resolve_project_root,
 )
-from ica_denoising.causal_behavior_decoding import CausalStateConfig, compare_latent_graphs
+from ica_denoising.causal_behavior_decoding import (
+    CausalStateConfig,
+    compare_latent_graphs,
+)
 from ica_denoising.evaluation_diagnostics import (
     build_provenance_manifest,
     compute_bpi_ablation,
@@ -101,7 +104,9 @@ def run_dataset_evaluation(
         raise FileNotFoundError(f"{dataset_key} has no available tail-angle file.")
     config = load_evaluation_config(config_path, sample_rate_hz=spec.sample_rate_hz)
     traces = traces_neurons_by_frames.T
-    tail_angle = np.asarray(np.load(spec.tail_angle_path, allow_pickle=False), dtype=float)
+    tail_angle = np.asarray(
+        np.load(spec.tail_angle_path, allow_pickle=False), dtype=float
+    )
     targets = make_behavior_targets(
         tail_angle,
         n_frames=traces.shape[0],
@@ -134,7 +139,8 @@ def run_dataset_evaluation(
         "leakage_audit": output_dir / "leakage_audit.csv",
         "component_selections": output_dir / "component_selections.csv",
         "cluster_stability": output_dir / "cluster_stability.csv",
-        "cluster_stability_assignments": output_dir / "cluster_stability_assignments.csv",
+        "cluster_stability_assignments": output_dir
+        / "cluster_stability_assignments.csv",
         "variant_metadata": output_dir / "variant_metadata.csv",
         "temporal_diagnostics": output_dir / "temporal_dependence_diagnostics.csv",
         "bpi_component_scores": output_dir / "bpi_component_scores.csv",
@@ -191,7 +197,9 @@ def run_dataset_evaluation(
         else pd.DataFrame()
     )
     causal_nonconverged_rows = (
-        result.causal_metrics[~result.causal_metrics["converged"].fillna(True).astype(bool)]
+        result.causal_metrics[
+            ~result.causal_metrics["converged"].fillna(True).astype(bool)
+        ]
         if "converged" in result.causal_metrics
         else pd.DataFrame()
     )
@@ -203,7 +211,9 @@ def run_dataset_evaluation(
             "provenance": provenance,
             "config": asdict(config),
             "fit_scope": "strict_fold_local",
-            "all_leakage_checks_passed": bool(result.leakage_audit["leakage_free"].all()),
+            "all_leakage_checks_passed": bool(
+                result.leakage_audit["leakage_free"].all()
+            ),
             "all_bss_fits_converged": nonconverged_rows.empty,
             "all_causal_fits_converged": causal_nonconverged_rows.empty,
             "fit_warnings": fit_warning_rows.to_dict(orient="records"),
@@ -222,7 +232,9 @@ def run_dataset_evaluation(
                 "leakage_audit": len(result.leakage_audit),
                 "component_selections": len(result.component_selections),
                 "cluster_stability": len(result.cluster_stability),
-                "cluster_stability_assignments": len(result.cluster_stability_assignments),
+                "cluster_stability_assignments": len(
+                    result.cluster_stability_assignments
+                ),
                 "variant_metadata": len(result.variant_metadata),
                 "temporal_diagnostics": len(result.temporal_diagnostics),
                 "bpi_component_scores": len(bpi_component_scores),
@@ -238,7 +250,9 @@ def write_provenance(
     project_root: Path | None = None,
     output_root: Path | None = None,
 ) -> Path:
-    project_root = resolve_project_root() if project_root is None else Path(project_root)
+    project_root = (
+        resolve_project_root() if project_root is None else Path(project_root)
+    )
     specs = [
         spec
         for spec in dataset_registry(project_root).values()
@@ -263,7 +277,9 @@ def run_all_v2a_evaluations(
     config_path: Path | None = None,
     output_root: Path | None = None,
 ) -> dict[str, dict[str, Path]]:
-    project_root = resolve_project_root() if project_root is None else Path(project_root)
+    project_root = (
+        resolve_project_root() if project_root is None else Path(project_root)
+    )
     specs = [
         spec
         for spec in dataset_registry(project_root).values()
@@ -353,7 +369,8 @@ def write_recording_aggregate(
     paths = {
         "trace": aggregate_dir / "recording_trace_preservation_metrics.csv",
         "behavior": aggregate_dir / "recording_behavior_fold_metrics.csv",
-        "behavior_uncertainty": aggregate_dir / "recording_behavior_block_uncertainty.csv",
+        "behavior_uncertainty": aggregate_dir
+        / "recording_behavior_block_uncertainty.csv",
         "causal": aggregate_dir / "recording_causal_fold_metrics.csv",
         "causal_sufficiency": aggregate_dir / "recording_causal_sufficiency.csv",
         "artifact_probe": aggregate_dir / "recording_artifact_probe_metrics.csv",
@@ -572,13 +589,17 @@ def behavior_prediction_uncertainty(
         raise ValueError(f"predictions is missing required columns: {missing}")
     context_columns = [
         column
-        for column in ("target_variant", "bout_quantile", "smooth_window", "null_strategy")
+        for column in (
+            "target_variant",
+            "bout_quantile",
+            "smooth_window",
+            "null_strategy",
+        )
         if column in predictions.columns
     ]
     join_columns = ["target", "task", *context_columns, "fold", "time_index"]
     reference = predictions[
-        (predictions["comparison"] == "within")
-        & (predictions["test_version"] == "raw")
+        (predictions["comparison"] == "within") & (predictions["test_version"] == "raw")
     ][[*join_columns, "y_true", "y_pred"]].rename(
         columns={"y_pred": "reference_prediction"}
     )
