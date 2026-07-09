@@ -1,0 +1,44 @@
+{
+  "benchmark_version": "core",
+  "schema_version": "1",
+  "seeds": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29],
+  "sample_rate_hz": 5.0,
+  "n_frames": 2000,
+  "graph": {
+    "family": "sparse_random",
+    "n_observed": 10,
+    "edge_density": 0.2,
+    "lag_order": 2,
+    "spectral_radius": 0.9
+  },
+  "behavior": {
+    "n_parents": 3,
+    "behavior_lag": 1,
+    "bout_quantile": 0.75,
+    "smooth_window": 5
+  },
+  "bss": {
+    "methods": ["fastica", "infomax", "sobi", "jade"],
+    "ranks": ["full", "ev95"],
+    "random_states": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9],
+    "sobi_lag_sets": [[1, 2, 3, 5], [1, 2, 4, 8]],
+    "keep_top": 4
+  },
+  "estimator": {
+    "estimators": ["cgc", "cgc_star", "var"],
+    "n_pasts": 2,
+    "n_lags": 2,
+    "n_perm": 200,
+    "alpha": 0.01,
+    "beta": 0.001,
+    "correction": "fdr",
+    "var_orders": [1, 2, 3],
+    "run_pcmci": true
+  },
+  "run": {
+    "output_dir": "outputs/simulation",
+    "resume": true,
+    "workers": 1
+  },
+  "scenarios": []
+}

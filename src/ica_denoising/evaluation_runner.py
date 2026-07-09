@@ -60,7 +60,10 @@ STRICT_TUPLE_FIELDS = {
     "causal_transition_models",
     "causal_sufficiency_targets",
     "artifact_probe_centers",
+    "bss_random_states",
+    "bss_rank_modes",
 }
+NESTED_TUPLE_FIELDS = {"sobi_lag_sets"}
 CAUSAL_TUPLE_FIELDS = {"target_shifts"}
 
 
@@ -83,6 +86,9 @@ def load_evaluation_config(
     for name in STRICT_TUPLE_FIELDS:
         if name in payload:
             payload[name] = tuple(payload[name])
+    for name in NESTED_TUPLE_FIELDS:
+        if name in payload:
+            payload[name] = tuple(tuple(item) for item in payload[name])
     return EvaluationConfig(**payload)
 
 

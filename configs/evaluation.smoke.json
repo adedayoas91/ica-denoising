@@ -45,6 +45,10 @@
   ],
   "artifact_probe_centers": [],
   "artifact_probe_half_width": 2,
+  "input_local": false,
+  "bss_random_states": [],
+  "sobi_lag_sets": [],
+  "bss_rank_modes": [],
   "causal": {
     "window": 15,
     "target_shifts": [

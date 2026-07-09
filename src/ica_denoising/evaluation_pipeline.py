@@ -213,6 +213,12 @@ class EvaluationConfig:
     causal_sufficiency_targets: tuple[str, ...] = ("vigor",)
     artifact_probe_centers: tuple[int, ...] = ()
     artifact_probe_half_width: int = 2
+    # Section 5.3 - fully input-local evaluation (opt-in; safe default off).
+    input_local: bool = False
+    # Section 5.5 - BSS robustness (empty defaults preserve existing behavior).
+    bss_random_states: tuple[int, ...] = ()
+    sobi_lag_sets: tuple[tuple[int, ...], ...] = ()
+    bss_rank_modes: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -811,6 +817,11 @@ def run_evaluation(
                 "fold": fold.fold,
                 "variant": variant.name,
                 "family": variant.family,
+                "reconstruction_rank": _variant_reconstruction_rank(variant.metadata),
+                "explained_variance_ratio": _variant_explained_variance(
+                    variant.metadata
+                ),
+                "rank_mode": variant.metadata.get("rank_mode"),
                 "metadata_json": json.dumps(dict(variant.metadata), sort_keys=True),
             }
             for variant in variants
@@ -2154,6 +2165,80 @@ def _apply_scaler(
 ) -> np.ndarray:
     mean, std = scaler
     return (values - mean) / std
+
+
+def _variant_reconstruction_rank(metadata: Mapping[str, object]) -> object:
+    for key in ("rank", "n_components"):
+        value = metadata.get(key)
+        if value is not None:
+            return int(value)
+    return None
+
+
+def _variant_explained_variance(metadata: Mapping[str, object]) -> object:
+    for key in ("pca_explained_variance_ratio", "matched_energy_fraction"):
+        value = metadata.get(key)
+        if value is not None and np.isfinite(float(value)):
+            return float(value)
+    return None
+
+
+def bss_robustness_summary(
+    causal_metrics: pd.DataFrame,
+    *,
+    value_col: str = "dynamic_mse_normalized",
+    group_cols: Sequence[str] = ("variant", "transition_model"),
+) -> pd.DataFrame:
+    """Summarize restart/lag-set robustness with median, interval, range, failures.
+
+    Aggregates a per-restart causal-metrics table into a compact robustness
+    summary, recording the failure (nonconvergence) rate so failures are never
+    silently dropped.
+
+    Args:
+        causal_metrics: Per-restart metrics with at least ``value_col`` and, when
+            available, a ``converged`` column.
+        value_col: Metric column to summarize.
+        group_cols: Columns identifying a robustness group.
+
+    Returns:
+        One row per group with ``n``, ``median``, ``q25``, ``q75``, ``min``,
+        ``max``, ``range``, and ``failure_rate``.
+    """
+    if causal_metrics.empty or value_col not in causal_metrics:
+        return pd.DataFrame()
+    present_groups = [col for col in group_cols if col in causal_metrics.columns]
+    if not present_groups:
+        present_groups = []
+        causal_metrics = causal_metrics.assign(_group="all")
+        present_groups = ["_group"]
+    rows = []
+    for key, group in causal_metrics.groupby(present_groups, dropna=False):
+        values = group[value_col].to_numpy(dtype=float)
+        finite = values[np.isfinite(values)]
+        if "converged" in group:
+            converged = group["converged"].fillna(True).astype(bool)
+            failure_rate = float(1.0 - converged.mean())
+        else:
+            failure_rate = 0.0
+        key_values = key if isinstance(key, tuple) else (key,)
+        row: dict[str, object] = dict(zip(present_groups, key_values))
+        row.update(
+            {
+                "n": int(values.size),
+                "median": float(np.median(finite)) if finite.size else np.nan,
+                "q25": float(np.quantile(finite, 0.25)) if finite.size else np.nan,
+                "q75": float(np.quantile(finite, 0.75)) if finite.size else np.nan,
+                "min": float(np.min(finite)) if finite.size else np.nan,
+                "max": float(np.max(finite)) if finite.size else np.nan,
+                "range": (
+                    float(np.max(finite) - np.min(finite)) if finite.size else np.nan
+                ),
+                "failure_rate": failure_rate,
+            }
+        )
+        rows.append(row)
+    return pd.DataFrame(rows)
 
 
 def _safe_ratio(numerator: float, denominator: float) -> float:

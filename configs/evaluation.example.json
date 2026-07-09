@@ -155,6 +155,30 @@
   ],
   "artifact_probe_centers": [],
   "artifact_probe_half_width": 2,
+  "input_local": false,
+  "bss_random_states": [
+    0,
+    1,
+    2
+  ],
+  "sobi_lag_sets": [
+    [
+      1,
+      2,
+      3,
+      5
+    ],
+    [
+      1,
+      2,
+      4,
+      8
+    ]
+  ],
+  "bss_rank_modes": [
+    "full_rank",
+    "explained_variance"
+  ],
   "causal": {
     "window": 15,
     "target_shifts": [
