@@ -2,10 +2,23 @@ from __future__ import annotations
 
 import json
 
+import numpy as np
 import pandas as pd
 
-from ica_denoising.simulation.config import SimulationConfig
-from ica_denoising.simulation.runner import replicate_dir, run_benchmark
+from csl.experiments.simulation_adapters import GraphEstimate
+from ica_denoising.simulation.config import (
+    ArtifactConfig,
+    CalciumConfig,
+    DynamicsConfig,
+    ScenarioConfig,
+    SimulationConfig,
+)
+from ica_denoising.simulation.dataset import build_dataset
+from ica_denoising.simulation.runner import (
+    _select_scored_graph,
+    replicate_dir,
+    run_benchmark,
+)
 
 
 def _smoke_cfg(tmp_path):
@@ -101,3 +114,70 @@ def test_manifest_validation_passes(tmp_path):
     report = validate_benchmark(root)
     assert report.ok, report.errors
     assert report.checked == 2
+
+
+def test_fdr_correction_selects_fdr_binary_graph():
+    est = GraphEstimate(
+        estimator="cgc",
+        scores=np.array([[0.0, 0.9], [0.1, 0.0]]),
+        binary=np.array([[0, 1], [1, 0]]),
+        binary_fdr=np.array([[0, 0], [1, 0]]),
+        warnings=(),
+    )
+
+    scored, correction = _select_scored_graph(est, "fdr")
+
+    assert correction == "fdr"
+    assert scored[0, 1] == 0
+    assert scored[1, 0] == 1
+
+
+def test_failed_estimator_marks_manifest_incomplete(tmp_path, monkeypatch):
+    from ica_denoising.simulation import runner
+
+    def _fail(_traces):
+        raise RuntimeError("forced estimator failure")
+
+    monkeypatch.setitem(runner.ESTIMATORS, "forced_failure", _fail)
+    cfg = _smoke_cfg(tmp_path)
+    cfg = SimulationConfig.from_dict(
+        {
+            **cfg.to_dict(),
+            "seeds": [0],
+            "estimator": {**cfg.to_dict()["estimator"], "estimators": ["forced_failure"]},
+        }
+    )
+
+    paths = run_benchmark(cfg)
+    manifest = json.loads((paths[0] / "manifest.json").read_text())
+    failures = pd.read_csv(paths[0] / "failures.csv")
+
+    assert manifest["complete"] is False
+    assert not failures.empty
+
+
+def test_behavior_feedback_changes_generated_dynamics(tmp_path):
+    base_cfg = SimulationConfig.from_dict(
+        {
+            "benchmark_version": "feedback",
+            "n_frames": 120,
+            "graph": {"n_observed": 4, "lag_order": 2},
+        }
+    )
+    no_feedback = ScenarioConfig(
+        "S0",
+        dynamics=DynamicsConfig(model="linear_var", behavior_feedback=False),
+        calcium=CalciumConfig(enabled=False),
+        artifacts=ArtifactConfig(types=()),
+    )
+    feedback = ScenarioConfig(
+        "S7",
+        dynamics=DynamicsConfig(model="linear_var", behavior_feedback=True),
+        calcium=CalciumConfig(enabled=False),
+        artifacts=ArtifactConfig(types=()),
+    )
+
+    a = build_dataset(base_cfg, no_feedback, seed=0)
+    b = build_dataset(base_cfg, feedback, seed=0)
+
+    assert not np.allclose(a.clean_fluorescence, b.clean_fluorescence)

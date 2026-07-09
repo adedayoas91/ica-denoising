@@ -155,7 +155,7 @@
   ],
   "artifact_probe_centers": [],
   "artifact_probe_half_width": 2,
-  "input_local": false,
+  "input_local": true,
   "bss_random_states": [
     0,
     1,
@@ -176,8 +176,8 @@
     ]
   ],
   "bss_rank_modes": [
-    "full_rank",
-    "explained_variance"
+    "full",
+    "ev95"
   ],
   "causal": {
     "window": 15,

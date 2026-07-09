@@ -44,6 +44,8 @@ class EvaluationRunnerTests(unittest.TestCase):
         self.assertIsNone(config.n_components)
         self.assertIsNone(config.bss_pca_components)
         self.assertIsNone(config.bss_pca_variance_threshold)
+        self.assertTrue(config.input_local)
+        self.assertEqual(config.bss_rank_modes, ("full", "ev95"))
 
     def test_behavior_uncertainty_uses_paired_out_of_fold_predictions(self) -> None:
         rows = []

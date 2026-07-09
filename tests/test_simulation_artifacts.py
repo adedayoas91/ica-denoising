@@ -61,6 +61,33 @@ def test_variants_oracle_isolation():
             assert v.uses_ground_truth
 
 
+def test_variant_grid_expands_ranks_restarts_and_sobi_lags():
+    rng = np.random.default_rng(44)
+    clean = _clean(rng)
+    cfg = ArtifactConfig(types=("drift",), artifact_to_signal=0.5)
+    bundle = inject_artifacts(clean, cfg, rng)
+
+    variants = build_variants(
+        clean=clean,
+        corrupted=bundle.corrupted,
+        artifact=bundle.artifact,
+        methods=("fastica", "sobi"),
+        keep_top=4,
+        rank_target=4,
+        random_state=0,
+        sample_rate_hz=5.0,
+        rank_targets=(("full", 6), ("ev90", 3)),
+        random_states=(0, 1),
+        sobi_lag_sets=((1, 2), (2, 4)),
+    )
+
+    ids = {variant.variant_id for variant in variants}
+    assert "fastica/cluster_keep_top_04_full/rank_6/seed_0" in ids
+    assert "fastica/cluster_keep_top_04_ev90/rank_3/seed_1" in ids
+    assert "sobi/cluster_keep_top_04_lags_1_2_full/rank_6/seed_0" in ids
+    assert "sobi/cluster_keep_top_04_lags_2_4_ev90/rank_3/seed_1" in ids
+
+
 def test_artifact_oracle_recovers_clean():
     rng = np.random.default_rng(5)
     clean = _clean(rng)

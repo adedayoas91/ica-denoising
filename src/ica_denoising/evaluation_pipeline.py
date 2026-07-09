@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
+import hashlib
 import json
 from pathlib import Path
 from typing import Iterable, Mapping, Sequence
@@ -42,6 +43,26 @@ from ica_denoising.evaluation_diagnostics import (
 )
 from ica_denoising.ic_quality.features import ICFeatureConfig, compute_ic_features
 from ica_denoising.ic_quality.scoring import score_ic_candidates
+from ica_denoising.input_local import (
+    InputLocalConfig,
+    build_input_local_targets,
+    causal_moving_average,
+    contiguous_segments as input_local_contiguous_segments,
+    fit_per_neuron_imputer,
+)
+from ica_denoising.nested_selection import (
+    NestedSelectionConfig,
+    make_nested_folds,
+    no_selection_baseline,
+    select_candidate,
+)
+from ica_denoising.uncertainty import (
+    assign_temporal_blocks,
+    correlation_contributions,
+    ratio_metric_contributions,
+    rmse_contributions,
+)
+from ica_denoising.variant_id import build_variant_id, cluster_keep_selection
 
 
 @dataclass(frozen=True)
@@ -150,6 +171,10 @@ class FoldVariant:
     fit_idx: np.ndarray
     metadata: Mapping[str, object] = field(default_factory=dict)
 
+    @property
+    def variant_id(self) -> str:
+        return str(self.metadata.get("variant_id", self.name))
+
 
 @dataclass(frozen=True)
 class EvaluationConfig:
@@ -219,6 +244,17 @@ class EvaluationConfig:
     bss_random_states: tuple[int, ...] = ()
     sobi_lag_sets: tuple[tuple[int, ...], ...] = ()
     bss_rank_modes: tuple[str, ...] = ()
+    # Section 5.4 - nested selection reporting.
+    nested_selection_policies: tuple[str, ...] = (
+        "no_selection",
+        "unsupervised",
+        "behavior_assisted",
+    )
+    nested_selection_inner_splits: int = 3
+    nested_selection_inner_gap: int | None = None
+    nested_selection_min_trace_preservation: float = 0.5
+    nested_selection_max_state_change: float = float("inf")
+    nested_selection_baseline_rule: str = "cluster_keep_top_04"
 
 
 @dataclass(frozen=True)
@@ -236,6 +272,10 @@ class EvaluationResult:
     cluster_stability_assignments: pd.DataFrame
     variant_metadata: pd.DataFrame
     temporal_diagnostics: pd.DataFrame
+    nested_selection: pd.DataFrame
+    trace_uncertainty: pd.DataFrame
+    causal_uncertainty: pd.DataFrame
+    causal_sufficiency_uncertainty: pd.DataFrame
 
 
 def make_strict_folds(
@@ -772,11 +812,19 @@ def run_cluster_stability_sweep(
 
 def run_evaluation(
     traces: np.ndarray,
-    targets: BehaviorTargets,
+    targets: BehaviorTargets | None,
     config: EvaluationConfig,
+    *,
+    tail_angle: np.ndarray | None = None,
 ) -> EvaluationResult:
-    traces = _validate_traces(traces)
-    _validate_targets(targets, traces.shape[0])
+    traces = _validate_traces(traces, allow_nonfinite=config.input_local)
+    if config.input_local:
+        if tail_angle is None:
+            raise ValueError("tail_angle is required when config.input_local=True.")
+    else:
+        if targets is None:
+            raise ValueError("targets are required when config.input_local=False.")
+        _validate_targets(targets, traces.shape[0])
     required_gap = max(
         max(config.decoder_lags, default=0),
         minimum_causal_gap(config.causal),
@@ -800,15 +848,27 @@ def run_evaluation(
     variant_metadata_rows: list[dict[str, object]] = []
     temporal_frames: list[pd.DataFrame] = []
     trace_metric_frames: list[pd.DataFrame] = []
+    trace_uncertainty_frames: list[pd.DataFrame] = []
+    causal_uncertainty_frames: list[pd.DataFrame] = []
+    sufficiency_uncertainty_frames: list[pd.DataFrame] = []
+    nested_selection_frames: list[pd.DataFrame] = []
 
     for fold in folds:
+        fold_traces, fold_targets, input_audit = _resolve_fold_inputs(
+            traces,
+            targets,
+            tail_angle=tail_angle,
+            fold=fold,
+            config=config,
+        )
         (
             variants,
             fold_audit,
             fold_selections,
             fold_stability,
             fold_stability_assignments,
-        ) = make_fold_variants(traces, fold, config)
+        ) = make_fold_variants(fold_traces, fold, config)
+        audit_rows.extend(input_audit)
         audit_rows.extend(fold_audit)
         audit_rows.extend(_downstream_audit_rows(fold, variants))
         selection_rows.extend(fold_selections)
@@ -816,7 +876,9 @@ def run_evaluation(
             {
                 "fold": fold.fold,
                 "variant": variant.name,
+                "variant_id": variant.variant_id,
                 "family": variant.family,
+                "trace_hash": _hash_array(variant.traces),
                 "reconstruction_rank": _variant_reconstruction_rank(variant.metadata),
                 "explained_variance_ratio": _variant_explained_variance(
                     variant.metadata
@@ -831,24 +893,41 @@ def run_evaluation(
         if not fold_stability_assignments.empty:
             stability_assignment_frames.append(fold_stability_assignments)
         trace_metric_frames.append(_held_out_trace_metrics(variants, fold, config))
+        trace_uncertainty_frames.append(
+            _held_out_trace_uncertainty(variants, fold, config)
+        )
         fold_behavior, fold_predictions = _evaluate_behavior_variants(
-            variants, targets, fold, config
+            variants, fold_targets, fold, config
         )
         behavior_rows.extend(fold_behavior)
         prediction_frames.extend(fold_predictions)
-        fold_causal, fold_embeddings = _evaluate_causal_variants(
-            variants, targets, fold, config
+        fold_causal, fold_embeddings, fold_causal_uncertainty = (
+            _evaluate_causal_variants(variants, fold_targets, fold, config)
         )
         causal_rows.extend(fold_causal)
         embedding_rows.extend(fold_embeddings)
-        sufficiency = _evaluate_causal_sufficiency_variants(
-            variants, targets, fold, config
+        if not fold_causal_uncertainty.empty:
+            causal_uncertainty_frames.append(fold_causal_uncertainty)
+        sufficiency, sufficiency_uncertainty = _evaluate_causal_sufficiency_variants(
+            variants, fold_targets, fold, config
         )
         if not sufficiency.empty:
             sufficiency_frames.append(sufficiency)
+        if not sufficiency_uncertainty.empty:
+            sufficiency_uncertainty_frames.append(sufficiency_uncertainty)
         artifact_probe = _evaluate_artifact_probe_variants(variants, fold, config)
         if not artifact_probe.empty:
             artifact_probe_frames.append(artifact_probe)
+        nested = _nested_selection_report(
+            variants,
+            fold_targets,
+            fold,
+            config,
+            trace_metric_frames[-1],
+            fold_behavior,
+        )
+        if not nested.empty:
+            nested_selection_frames.append(nested)
 
         test_variants = {
             variant.name: variant.traces[fold.test_idx]
@@ -862,7 +941,7 @@ def run_evaluation(
         )
         if valid_lags and test_variants:
             temporal = temporal_dependence_diagnostics(
-                traces[fold.test_idx],
+                fold_traces[fold.test_idx],
                 test_variants,
                 lags=valid_lags,
                 sample_rate_hz=config.sample_rate_hz,
@@ -908,7 +987,93 @@ def run_evaluation(
             if temporal_frames
             else pd.DataFrame()
         ),
+        nested_selection=(
+            pd.concat(nested_selection_frames, ignore_index=True)
+            if nested_selection_frames
+            else pd.DataFrame()
+        ),
+        trace_uncertainty=(
+            pd.concat(trace_uncertainty_frames, ignore_index=True)
+            if trace_uncertainty_frames
+            else pd.DataFrame()
+        ),
+        causal_uncertainty=(
+            pd.concat(causal_uncertainty_frames, ignore_index=True)
+            if causal_uncertainty_frames
+            else pd.DataFrame()
+        ),
+        causal_sufficiency_uncertainty=(
+            pd.concat(sufficiency_uncertainty_frames, ignore_index=True)
+            if sufficiency_uncertainty_frames
+            else pd.DataFrame()
+        ),
     )
+
+
+def _resolve_fold_inputs(
+    traces: np.ndarray,
+    targets: BehaviorTargets | None,
+    *,
+    tail_angle: np.ndarray | None,
+    fold: StrictFold,
+    config: EvaluationConfig,
+) -> tuple[np.ndarray, BehaviorTargets, list[dict[str, object]]]:
+    if not config.input_local:
+        if targets is None:
+            raise ValueError("targets are required when input_local=False.")
+        return traces, targets, []
+
+    imputer = fit_per_neuron_imputer(
+        traces,
+        fold.train_idx,
+        fold=fold.fold,
+    )
+    fold_traces = imputer.transform(traces)
+    segments = _input_local_segments(fold)
+    local_targets, audits = build_input_local_targets(
+        np.asarray(tail_angle, dtype=float),
+        n_frames=traces.shape[0],
+        train_idx=fold.train_idx,
+        config=InputLocalConfig(
+            bout_quantile=config.bout_quantile,
+            vigor_smooth_window=max(1, targets.smooth_window if targets else 3),
+        ),
+        fold=fold.fold,
+        block_segments=segments,
+    )
+    rows = [_input_transform_audit_row(imputer.audit(), uses_labels=False)]
+    rows.extend(
+        _input_transform_audit_row(audit, uses_labels=audit.transform == "bout_threshold")
+        for audit in audits
+    )
+    return fold_traces, local_targets, rows
+
+
+def _input_local_segments(fold: StrictFold) -> tuple[np.ndarray, ...]:
+    groups: list[np.ndarray] = []
+    for indices in (fold.train_idx, fold.excluded_idx, fold.test_idx):
+        groups.extend(input_local_contiguous_segments(indices))
+    return tuple(groups)
+
+
+def _input_transform_audit_row(audit, *, uses_labels: bool) -> dict[str, object]:
+    return {
+        "fold": int(audit.fold),
+        "variant": "shared",
+        "operation": audit.transform,
+        "fit_scope": audit.fit_scope,
+        "n_fit_frames": int(audit.n_fit_frames),
+        "n_test_frames_seen_during_fit": 0,
+        "uses_behavior_labels": bool(uses_labels),
+        "uses_future_samples": bool(audit.uses_future_samples),
+        "test_time_action": "input_local_transform",
+        "leakage_free": not bool(audit.uses_future_samples),
+        "detail": audit.detail,
+    }
+
+
+def _hash_array(array: np.ndarray) -> str:
+    return hashlib.sha256(np.ascontiguousarray(array).tobytes()).hexdigest()[:16]
 
 
 def _held_out_trace_metrics(
@@ -993,9 +1158,209 @@ def _held_out_trace_metrics(
         pd.DataFrame(spectral_rows), on="variant", validate="one_to_one"
     )
     family_by_name = {variant.name: variant.family for variant in variants}
+    variant_id_by_name = {variant.name: variant.variant_id for variant in variants}
     metrics.insert(0, "family", metrics["variant"].map(family_by_name))
+    metrics.insert(1, "variant_id", metrics["variant"].map(variant_id_by_name))
     metrics.insert(0, "fold", int(fold.fold))
     return metrics
+
+
+def _held_out_trace_uncertainty(
+    variants: Sequence[FoldVariant],
+    fold: StrictFold,
+    config: EvaluationConfig,
+) -> pd.DataFrame:
+    raw = next(variant for variant in variants if variant.name == "raw")
+    raw_test = raw.traces[fold.test_idx]
+    blocks = assign_temporal_blocks(
+        fold.test_idx,
+        block_size=config.uncertainty_block_size,
+    )
+    flat_blocks = np.repeat(blocks, raw_test.shape[1])
+    scale = float(np.std(raw_test))
+    frames: list[pd.DataFrame] = []
+    for variant in variants:
+        values = variant.traces[fold.test_idx]
+        rmse = rmse_contributions(raw_test, values, blocks, scale=scale)
+        rmse.insert(0, "metric", "trace_nrmse")
+        corr = correlation_contributions(
+            raw_test.reshape(-1),
+            values.reshape(-1),
+            flat_blocks,
+        )
+        corr.insert(0, "metric", "trace_pearson")
+        for frame in (rmse, corr):
+            frame.insert(0, "variant_id", variant.variant_id)
+            frame.insert(0, "variant", variant.name)
+            frame.insert(0, "family", variant.family)
+            frame.insert(0, "fold", int(fold.fold))
+            frame["block_size"] = int(config.uncertainty_block_size)
+            frames.append(frame)
+    return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+def _nested_selection_report(
+    variants: Sequence[FoldVariant],
+    targets: BehaviorTargets,
+    fold: StrictFold,
+    config: EvaluationConfig,
+    trace_metrics: pd.DataFrame,
+    behavior_rows: Sequence[Mapping[str, object]],
+) -> pd.DataFrame:
+    if not config.nested_selection_policies:
+        return pd.DataFrame()
+    policies = tuple(str(policy) for policy in config.nested_selection_policies)
+    frames: list[pd.DataFrame] = []
+    if "no_selection" in policies:
+        result = no_selection_baseline(
+            outer_fold=fold.fold,
+            rule=config.nested_selection_baseline_rule,
+        )
+        table = result.candidate_table.copy()
+        table["selected_candidate"] = result.selected_candidate
+        table["selected_score"] = result.selected_score
+        table["constraint_status"] = result.constraint_status
+        table["tie_break_reason"] = result.tie_break_reason
+        table["selection_scope"] = "fixed_preregistered_rule"
+        frames.append(table)
+
+    candidate_table = _nested_candidate_table(variants, targets, fold, config)
+    if candidate_table.empty:
+        candidate_table = _fallback_nested_candidate_table(trace_metrics, behavior_rows)
+    if not candidate_table.empty:
+        for policy in policies:
+            if policy == "no_selection":
+                continue
+            if policy not in {"unsupervised", "behavior_assisted"}:
+                raise ValueError(f"Unknown nested selection policy: {policy!r}")
+            nested_config = NestedSelectionConfig(
+                policy=policy,
+                n_inner_splits=config.nested_selection_inner_splits,
+                inner_gap=(
+                    config.gap
+                    if config.nested_selection_inner_gap is None
+                    else int(config.nested_selection_inner_gap)
+                ),
+                min_trace_preservation=config.nested_selection_min_trace_preservation,
+                max_state_change=config.nested_selection_max_state_change,
+                baseline_rule=config.nested_selection_baseline_rule,
+                random_state=config.random_state,
+            )
+            result = select_candidate(
+                candidate_table,
+                outer_fold=fold.fold,
+                config=nested_config,
+            )
+            table = result.candidate_table.copy()
+            table["selected_candidate"] = result.selected_candidate
+            table["selected_score"] = result.selected_score
+            table["constraint_status"] = result.constraint_status
+            table["tie_break_reason"] = result.tie_break_reason
+            table["selection_scope"] = "outer_train_inner_validation_surrogate"
+            frames.append(table)
+    return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+
+
+def _nested_candidate_table(
+    variants: Sequence[FoldVariant],
+    targets: BehaviorTargets,
+    fold: StrictFold,
+    config: EvaluationConfig,
+) -> pd.DataFrame:
+    try:
+        inner_folds = make_nested_folds(
+            fold.train_idx,
+            n_inner_splits=config.nested_selection_inner_splits,
+            inner_gap=(
+                config.gap
+                if config.nested_selection_inner_gap is None
+                else int(config.nested_selection_inner_gap)
+            ),
+        )
+    except ValueError:
+        return pd.DataFrame()
+    raw = next(variant for variant in variants if variant.name == "raw")
+    rows = []
+    for variant in variants:
+        if variant.name == raw.name:
+            continue
+        preservation_values = []
+        artifact_values = []
+        behavior_values = []
+        for inner in inner_folds:
+            val_idx = inner.inner_val_idx
+            raw_val = raw.traces[val_idx]
+            candidate_val = variant.traces[val_idx]
+            centered_raw = raw_val - raw_val.mean(axis=0, keepdims=True)
+            centered_candidate = candidate_val - candidate_val.mean(axis=0, keepdims=True)
+            preservation_values.append(
+                _safe_ratio(
+                    float(np.sum(centered_candidate**2)),
+                    float(np.sum(centered_raw**2)),
+                )
+            )
+            artifact_values.append(
+                _safe_ratio(
+                    float(np.mean((candidate_val - raw_val) ** 2)),
+                    float(np.var(raw_val)),
+                )
+            )
+            behavior_values.append(
+                _population_vigor_correlation(candidate_val, targets.vigor[val_idx])
+                - _population_vigor_correlation(raw_val, targets.vigor[val_idx])
+            )
+        rows.append(
+            {
+                "candidate": variant.variant_id,
+                "candidate_name": variant.name,
+                "trace_preservation": float(np.nanmean(preservation_values)),
+                "state_change": 0.0,
+                "artifact_score": float(np.nanmean(artifact_values)),
+                "behavior_effect": float(np.nanmean(behavior_values)),
+                "n_inner_folds": int(len(inner_folds)),
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def _fallback_nested_candidate_table(
+    trace_metrics: pd.DataFrame,
+    behavior_rows: Sequence[Mapping[str, object]],
+) -> pd.DataFrame:
+    if trace_metrics.empty:
+        return pd.DataFrame()
+    behavior = pd.DataFrame(behavior_rows)
+    rows = []
+    for row in trace_metrics.to_dict(orient="records"):
+        if row.get("variant") == "raw":
+            continue
+        candidate = str(row.get("variant_id") or row.get("variant"))
+        behavior_effect = np.nan
+        if not behavior.empty and "test_variant_id" in behavior:
+            selected = behavior[
+                (behavior["test_variant_id"] == candidate)
+                & (behavior["comparison"].isin(["within", "transfer_raw_to_clean"]))
+            ]
+            if "pearson" in selected:
+                behavior_effect = float(selected["pearson"].mean())
+        rows.append(
+            {
+                "candidate": candidate,
+                "candidate_name": row.get("variant"),
+                "trace_preservation": row.get("retained_energy_fraction", np.nan),
+                "state_change": 0.0,
+                "artifact_score": 1.0 - float(row.get("global_pearson", np.nan)),
+                "behavior_effect": behavior_effect,
+                "n_inner_folds": 0,
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def _population_vigor_correlation(traces: np.ndarray, vigor: np.ndarray) -> float:
+    signal = np.asarray(traces, dtype=float).mean(axis=1)
+    target = np.asarray(vigor, dtype=float)
+    if signal.size < 2 or target.size < 2:
+        return float("nan")
+    return _safe_pearson(target, signal)
 
 
 def make_fold_variants(
@@ -1015,7 +1380,15 @@ def make_fold_variants(
             family="raw",
             traces=traces,
             fit_idx=np.array([], dtype=int),
-            metadata={"operation": "identity"},
+            metadata={
+                "operation": "identity",
+                "variant_id": build_variant_id(
+                    method="raw",
+                    selection="identity",
+                    rank=traces.shape[1],
+                    seed=0,
+                ),
+            },
         )
     ]
     audit_rows = [
@@ -1026,9 +1399,15 @@ def make_fold_variants(
     stability_assignment_frames: list[pd.DataFrame] = []
     energy_match_targets: dict[str, float] = {}
 
-    for method, bss_name, n_components, pca_variance_threshold in _bss_fit_specs(
-        config
-    ):
+    for (
+        method,
+        bss_name,
+        n_components,
+        pca_variance_threshold,
+        bss_random_state,
+        sobi_lags,
+        rank_mode,
+    ) in _bss_fit_specs(config):
         model = fit_bss_model(
             traces,
             fold.train_idx,
@@ -1038,8 +1417,8 @@ def make_fold_variants(
             pca_variance_threshold=pca_variance_threshold,
             tolerance=config.bss_tolerance,
             max_iter=config.bss_max_iter,
-            random_state=config.random_state,
-            sobi_lags=config.sobi_lags,
+            random_state=bss_random_state,
+            sobi_lags=sobi_lags,
             jade_max_cumulant_matrices=config.jade_max_cumulant_matrices,
         )
         selection = fit_cluster_selection(
@@ -1053,7 +1432,7 @@ def make_fold_variants(
             ranking_fmin_hz=config.ranking_fmin_hz,
             ranking_fmax_hz=config.ranking_fmax_hz,
             ranking_aggregate=config.ranking_aggregate,
-            random_state=config.random_state,
+            random_state=bss_random_state,
         )
         if config.cluster_stability_seeds:
             pairwise, assignments = run_cluster_stability_sweep(
@@ -1102,6 +1481,12 @@ def make_fold_variants(
             row = {
                 "fold": fold.fold,
                 "method": bss_name,
+                "variant_id": build_variant_id(
+                    method=method,
+                    selection=_decomposition_selection_token(rank_mode, sobi_lags, method),
+                    rank=model.n_components,
+                    seed=bss_random_state,
+                ),
                 "component": component,
                 "cluster": int(cluster),
                 "cluster_rank": int(cluster_rank[int(cluster)]),
@@ -1134,6 +1519,9 @@ def make_fold_variants(
             model.pca_explained_variance_ratio
         )
         decomposition_audit["component_selection_mode"] = model.component_selection_mode
+        decomposition_audit["random_state"] = bss_random_state
+        decomposition_audit["sobi_lags"] = " ".join(str(lag) for lag in sobi_lags)
+        decomposition_audit["rank_mode"] = rank_mode
         audit_rows.extend(
             [
                 decomposition_audit,
@@ -1175,6 +1563,20 @@ def make_fold_variants(
                     if strategy in {"random", "energy_matched_random"}:
                         suffix = f"{suffix}/seed{seed}"
                     name = f"{bss_name}/{strategy}/{suffix}"
+                    selection_token = _bss_selection_token(
+                        strategy=strategy,
+                        keep_count=keep_count,
+                        selection_seed=seed,
+                        rank_mode=rank_mode,
+                        method=method,
+                        sobi_lags=sobi_lags,
+                    )
+                    variant_id = build_variant_id(
+                        method=method,
+                        selection=selection_token,
+                        rank=model.n_components,
+                        seed=bss_random_state,
+                    )
                     variants.append(
                         FoldVariant(
                             name=name,
@@ -1189,6 +1591,10 @@ def make_fold_variants(
                                 "pca_explained_variance_ratio": model.pca_explained_variance_ratio,
                                 "component_selection_mode": model.component_selection_mode,
                                 "strategy": strategy,
+                                "variant_id": variant_id,
+                                "rank_mode": rank_mode,
+                                "bss_random_state": bss_random_state,
+                                "sobi_lags": sobi_lags,
                                 "keep_cluster_count": keep_count,
                                 "keep_components": keep.tolist(),
                                 "fit_indices": "training_frames_only",
@@ -1214,6 +1620,19 @@ def make_fold_variants(
         for strategy in config.ic_quality_selection_strategies:
             keep = select_components_by_ic_quality(quality_table, strategy=strategy)
             name = f"{bss_name}/{strategy}"
+            variant_id = build_variant_id(
+                method=method,
+                selection=_bss_selection_token(
+                    strategy=strategy,
+                    keep_count=None,
+                    selection_seed=config.random_state,
+                    rank_mode=rank_mode,
+                    method=method,
+                    sobi_lags=sobi_lags,
+                ),
+                rank=model.n_components,
+                seed=bss_random_state,
+            )
             variants.append(
                 FoldVariant(
                     name=name,
@@ -1228,6 +1647,10 @@ def make_fold_variants(
                         "pca_explained_variance_ratio": model.pca_explained_variance_ratio,
                         "component_selection_mode": model.component_selection_mode,
                         "strategy": strategy,
+                        "variant_id": variant_id,
+                        "rank_mode": rank_mode,
+                        "bss_random_state": bss_random_state,
+                        "sobi_lags": sobi_lags,
                         "keep_components": keep.tolist(),
                         "selection_source": "ic_quality",
                         "fit_indices": "training_frames_only",
@@ -1267,7 +1690,15 @@ def make_fold_variants(
                     family="latent_benchmark",
                     traces=latent_model.reconstruct(traces),
                     fit_idx=latent_model.train_idx,
-                    metadata=metadata,
+                    metadata={
+                        **metadata,
+                        "variant_id": build_variant_id(
+                            method=latent_model.name,
+                            selection="latent_benchmark",
+                            rank=latent_model.rank,
+                            seed=config.random_state,
+                        ),
+                    },
                 )
             )
             audit_rows.append(
@@ -1289,7 +1720,22 @@ def make_fold_variants(
         name = f"pca/rank{rank}"
         variants.append(
             FoldVariant(
-                name, "baseline", pca_model.reconstruct(traces), pca_model.train_idx
+                name,
+                "baseline",
+                pca_model.reconstruct(traces),
+                pca_model.train_idx,
+                metadata={
+                    "method": "pca",
+                    "rank": rank,
+                    "variant_id": build_variant_id(
+                        method="pca",
+                        selection="rank_matched",
+                        rank=rank,
+                        seed=config.random_state,
+                    ),
+                    "random_state": config.random_state,
+                    "fit_indices": "training_frames_only",
+                },
             )
         )
         audit_rows.append(
@@ -1311,6 +1757,18 @@ def make_fold_variants(
                     "baseline",
                     random_model.reconstruct(traces),
                     random_model.train_idx,
+                    metadata={
+                        "method": "random_subspace",
+                        "rank": rank,
+                        "variant_id": build_variant_id(
+                            method="random_subspace",
+                            selection="rank_matched",
+                            rank=rank,
+                            seed=seed,
+                        ),
+                        "random_state": seed,
+                        "fit_indices": "training_frames_only",
+                    },
                 )
             )
             audit_rows.append(
@@ -1361,6 +1819,15 @@ def make_fold_variants(
                     "source_variants": entry["source_variants"],
                     "target_energy_fractions": entry["target_fractions"],
                     "matched_energy_fraction": entry["matched_fraction"],
+                    "method": "pca",
+                    "rank": rank,
+                    "variant_id": build_variant_id(
+                        method="pca",
+                        selection="energy_matched",
+                        rank=rank,
+                        seed=config.random_state,
+                    ),
+                    "random_state": config.random_state,
                 },
             )
         )
@@ -1384,7 +1851,15 @@ def make_fold_variants(
                 family="baseline",
                 traces=filtered,
                 fit_idx=np.array([], dtype=int),
-                metadata={"cutoff_hz": float(cutoff)},
+                metadata={
+                    "cutoff_hz": float(cutoff),
+                    "variant_id": build_variant_id(
+                        method="causal_lowpass",
+                        selection=f"cutoff_{float(cutoff):g}hz",
+                        rank=traces.shape[1],
+                        seed=0,
+                    ),
+                },
             )
         )
         audit_rows.append(
@@ -1407,37 +1882,137 @@ def make_fold_variants(
 
 def _bss_fit_specs(
     config: EvaluationConfig,
-) -> tuple[tuple[str, str, int | None, float | None], ...]:
-    specs: list[tuple[str, str, int | None, float | None]] = []
-    seen: set[tuple[str, int | None, float | None]] = set()
+) -> tuple[tuple[str, str, int | None, float | None, int, tuple[int, ...], str], ...]:
+    specs: list[tuple[str, str, int | None, float | None, int, tuple[int, ...], str]] = []
+    seen: set[tuple[str, int | None, float | None, int, tuple[int, ...], str]] = set()
+    random_states = config.bss_random_states or (config.random_state,)
+    rank_modes = config.bss_rank_modes or ("configured",)
     for method in config.bss_methods:
         method = method.lower()
-        candidates: list[tuple[str, int | None, float | None]] = [
-            (method, config.n_components, config.bss_pca_variance_threshold)
-        ]
-        candidates.extend(
-            (
-                f"{method}/components{int(count)}",
-                int(count),
-                config.bss_pca_variance_threshold,
+        sobi_lag_sets = config.sobi_lag_sets if method == "sobi" else (config.sobi_lags,)
+        for rank_mode in rank_modes:
+            base_components, base_threshold = _rank_mode_components_threshold(
+                config,
+                str(rank_mode),
             )
-            for count in config.bss_component_counts
-        )
-        candidates.extend(
-            (
-                f"{method}/pca_var{float(threshold):g}",
-                config.n_components,
-                float(threshold),
+            candidates: list[tuple[str, int | None, float | None]] = [
+                (method, base_components, base_threshold)
+            ]
+            candidates.extend(
+                (
+                    f"{method}/components{int(count)}",
+                    int(count),
+                    base_threshold,
+                )
+                for count in config.bss_component_counts
             )
-            for threshold in config.bss_pca_variance_thresholds
-        )
-        for name, n_components, threshold in candidates:
-            key = (method, n_components, threshold)
-            if key in seen:
-                continue
-            seen.add(key)
-            specs.append((method, name, n_components, threshold))
+            candidates.extend(
+                (
+                    f"{method}/pca_var{float(threshold):g}",
+                    base_components,
+                    float(threshold),
+                )
+                for threshold in config.bss_pca_variance_thresholds
+            )
+            for name, n_components, threshold in candidates:
+                for seed in random_states:
+                    for lag_set in sobi_lag_sets:
+                        lag_set = tuple(int(lag) for lag in lag_set)
+                        key = (
+                            method,
+                            n_components,
+                            threshold,
+                            int(seed),
+                            lag_set,
+                            str(rank_mode),
+                        )
+                        if key in seen:
+                            continue
+                        seen.add(key)
+                        parts = [name]
+                        if rank_modes != ("configured",):
+                            parts.append(str(rank_mode))
+                        if random_states != (config.random_state,):
+                            parts.append(f"seed{int(seed)}")
+                        if method == "sobi" and sobi_lag_sets != (config.sobi_lags,):
+                            parts.append(f"lags{_compact_lag_token(lag_set)}")
+                        specs.append(
+                            (
+                                method,
+                                "/".join(parts),
+                                n_components,
+                                threshold,
+                                int(seed),
+                                lag_set,
+                                str(rank_mode),
+                            )
+                        )
     return tuple(specs)
+
+
+def _rank_mode_components_threshold(
+    config: EvaluationConfig,
+    rank_mode: str,
+) -> tuple[int | None, float | None]:
+    token = rank_mode.lower()
+    if token in {"", "configured"}:
+        return config.n_components, config.bss_pca_variance_threshold
+    if token in {"full", "full_rank"}:
+        return config.n_components, None
+    if token == "explained_variance":
+        return (
+            config.n_components,
+            config.bss_pca_variance_threshold or DEFAULT_PCA_VARIANCE_THRESHOLD,
+        )
+    if token.startswith("ev"):
+        threshold = float(token.removeprefix("ev")) / 100.0
+        if not 0.0 < threshold <= 1.0:
+            raise ValueError(f"Invalid bss_rank_mode: {rank_mode!r}")
+        return config.n_components, threshold
+    if token.startswith("components"):
+        return int(token.removeprefix("components")), config.bss_pca_variance_threshold
+    raise ValueError(f"Unknown bss_rank_mode: {rank_mode!r}")
+
+
+def _compact_lag_token(lags: tuple[int, ...]) -> str:
+    return "_".join(str(int(lag)) for lag in lags)
+
+
+def _decomposition_selection_token(
+    rank_mode: str,
+    sobi_lags: tuple[int, ...],
+    method: str,
+) -> str:
+    token = f"fit_{str(rank_mode).replace('.', 'p')}"
+    if method == "sobi":
+        token = f"{token}_lags_{_compact_lag_token(sobi_lags)}"
+    return token
+
+
+def _bss_selection_token(
+    *,
+    strategy: str,
+    keep_count: int | None,
+    selection_seed: int,
+    rank_mode: str,
+    method: str,
+    sobi_lags: tuple[int, ...],
+) -> str:
+    if strategy == "low_frequency" and keep_count is not None:
+        token = cluster_keep_selection(keep_count)
+    elif strategy == "high_frequency" and keep_count is not None:
+        token = f"high_frequency_keep_top_{int(keep_count):02d}"
+    elif strategy == "all":
+        token = "all"
+    elif keep_count is not None:
+        token = f"{strategy}_keep_top_{int(keep_count):02d}_sel_seed_{int(selection_seed)}"
+    else:
+        token = str(strategy)
+    rank_token = str(rank_mode).replace(".", "p")
+    token = f"{token}_{rank_token}"
+    if method == "sobi":
+        token = f"{token}_lags_{_compact_lag_token(sobi_lags)}"
+    return token
 
 
 def causal_lowpass_for_fold(
@@ -1470,12 +2045,13 @@ def _evaluate_behavior_variants(
     predictions: list[pd.DataFrame] = []
     raw = next(variant for variant in variants if variant.name == "raw")
 
+    block_segments = _input_local_segments(fold) if config.input_local else None
     for (
         target_variant,
         bout_quantile,
         smooth_window,
         vigor,
-    ) in _behavior_target_variants(targets, config):
+    ) in _behavior_target_variants(targets, config, block_segments=block_segments):
         fold_threshold = float(np.quantile(vigor[fold.train_idx], bout_quantile))
         fold_targets = {
             "tail_vigor": ("regression", vigor),
@@ -1512,6 +2088,8 @@ def _evaluate_behavior_variants(
                     comparison="within",
                     train_version=variant.name,
                     test_version=variant.name,
+                    train_variant_id=variant.variant_id,
+                    test_variant_id=variant.variant_id,
                     fold=fold.fold,
                     ridge_alpha=config.decoder_ridge_alpha,
                 )
@@ -1540,6 +2118,8 @@ def _evaluate_behavior_variants(
                         comparison="transfer_raw_to_clean",
                         train_version=raw.name,
                         test_version=variant.name,
+                        train_variant_id=raw.variant_id,
+                        test_variant_id=variant.variant_id,
                         fold=fold.fold,
                         ridge_alpha=config.decoder_ridge_alpha,
                     )
@@ -1579,6 +2159,8 @@ def _evaluate_behavior_variants(
                             comparison="null_within",
                             train_version=raw.name,
                             test_version=raw.name,
+                            train_variant_id=raw.variant_id,
+                            test_variant_id=raw.variant_id,
                             fold=fold.fold,
                             ridge_alpha=config.decoder_ridge_alpha,
                             train_y_override=null_train,
@@ -1601,6 +2183,8 @@ def _evaluate_behavior_variants(
 def _behavior_target_variants(
     targets: BehaviorTargets,
     config: EvaluationConfig,
+    *,
+    block_segments: Sequence[Sequence[int]] | None = None,
 ) -> tuple[tuple[str, float, int, np.ndarray], ...]:
     """Return the primary target plus configured sensitivity targets."""
     quantiles = (config.bout_quantile, *config.target_bout_quantiles)
@@ -1619,13 +2203,21 @@ def _behavior_target_variants(
                 continue
             seen.add(key)
             name = (
-                "primary"
+                targets.target_variant
                 if key == (float(config.bout_quantile), 1)
                 else (f"q{float(quantile):.3g}_smooth{window}")
             )
-            vigor = (
-                targets.vigor if window == 1 else moving_average(targets.vigor, window)
-            )
+            if window == 1:
+                vigor = targets.vigor
+            elif config.input_local:
+                base = targets.raw_vigor if targets.raw_vigor is not None else targets.vigor
+                vigor = causal_moving_average(
+                    np.asarray(base, dtype=float),
+                    window,
+                    segments=block_segments,
+                )
+            else:
+                vigor = moving_average(targets.vigor, window)
             variants.append((name, float(quantile), window, vigor))
     return tuple(variants)
 
@@ -1711,6 +2303,8 @@ def _evaluate_decoding_pair(
     comparison: str,
     train_version: str,
     test_version: str,
+    train_variant_id: str,
+    test_variant_id: str,
     fold: int,
     ridge_alpha: float,
     train_y_override: np.ndarray | None = None,
@@ -1749,6 +2343,8 @@ def _evaluate_decoding_pair(
         "comparison": comparison,
         "train_version": train_version,
         "test_version": test_version,
+        "train_variant_id": train_variant_id,
+        "test_variant_id": test_variant_id,
         "fold": int(fold),
         "n_train": int(np.count_nonzero(train_mask)),
         "n_test": int(np.count_nonzero(test_mask)),
@@ -1761,6 +2357,8 @@ def _evaluate_decoding_pair(
             "comparison": comparison,
             "train_version": train_version,
             "test_version": test_version,
+            "train_variant_id": train_variant_id,
+            "test_variant_id": test_variant_id,
             "fold": int(fold),
             "time_index": times[test_mask],
             "y_true": y_test,
@@ -1777,9 +2375,10 @@ def _evaluate_causal_variants(
     targets: BehaviorTargets,
     fold: StrictFold,
     config: EvaluationConfig,
-) -> tuple[list[dict[str, object]], list[dict[str, object]]]:
+) -> tuple[list[dict[str, object]], list[dict[str, object]], pd.DataFrame]:
     rows: list[dict[str, object]] = []
     embeddings: list[dict[str, object]] = []
+    uncertainty_frames: list[pd.DataFrame] = []
     causal = config.causal
     fold_threshold = float(
         np.quantile(targets.vigor[fold.train_idx], config.bout_quantile)
@@ -1861,6 +2460,7 @@ def _evaluate_causal_variants(
                 fit_warnings = tuple(str(item.message) for item in caught)
                 row: dict[str, object] = {
                     "variant": variant.name,
+                    "variant_id": variant.variant_id,
                     "fold": fold.fold,
                     "target_shift": int(shift),
                     "transition_model": transition_name,
@@ -1883,11 +2483,36 @@ def _evaluate_causal_variants(
                     **behavior_metrics,
                 }
                 rows.append(row)
+                test_times = times[test_mask]
+                blocks = assign_temporal_blocks(
+                    test_times,
+                    block_size=config.uncertainty_block_size,
+                )
+                dynamic_se = np.mean((z1_test - z1_pred) ** 2, axis=1)
+                persistence_se = np.mean((z1_test - z0_test) ** 2, axis=1)
+                ratio = ratio_metric_contributions(dynamic_se, persistence_se, blocks)
+                ratio.insert(0, "metric", "dynamic_improvement_vs_persistence")
+                dynamic = rmse_contributions(
+                    z1_test,
+                    z1_pred,
+                    blocks,
+                    scale=np.sqrt(latent_variance) if latent_variance > 0 else None,
+                )
+                dynamic.insert(0, "metric", "dynamic_rmse")
+                for frame in (ratio, dynamic):
+                    frame.insert(0, "transition_model", transition_name)
+                    frame.insert(0, "target_shift", int(shift))
+                    frame.insert(0, "variant_id", variant.variant_id)
+                    frame.insert(0, "variant", variant.name)
+                    frame.insert(0, "fold", int(fold.fold))
+                    frame["block_size"] = int(config.uncertainty_block_size)
+                    uncertainty_frames.append(frame)
 
             test_sample_indices = np.flatnonzero(test_mask)
             for local_idx, sample_idx in enumerate(test_sample_indices):
                 embedding = {
                     "variant": variant.name,
+                    "variant_id": variant.variant_id,
                     "fold": fold.fold,
                     "target_shift": int(shift),
                     "time_index": int(times[sample_idx]),
@@ -1898,7 +2523,13 @@ def _evaluate_causal_variants(
                 for dim in range(z0_test.shape[1]):
                     embedding[f"z{dim + 1}"] = float(z0_test[local_idx, dim])
                 embeddings.append(embedding)
-    return rows, embeddings
+    return (
+        rows,
+        embeddings,
+        pd.concat(uncertainty_frames, ignore_index=True)
+        if uncertainty_frames
+        else pd.DataFrame(),
+    )
 
 
 def _evaluate_causal_sufficiency_variants(
@@ -1906,12 +2537,13 @@ def _evaluate_causal_sufficiency_variants(
     targets: BehaviorTargets,
     fold: StrictFold,
     config: EvaluationConfig,
-) -> pd.DataFrame:
+) -> tuple[pd.DataFrame, pd.DataFrame]:
     rows: list[dict[str, object]] = []
+    uncertainty_frames: list[pd.DataFrame] = []
     causal = config.causal
     target_names = config.causal_sufficiency_targets or ()
     if not target_names:
-        return pd.DataFrame()
+        return pd.DataFrame(), pd.DataFrame()
     for variant in variants:
         for shift in causal.target_shifts:
             x0, _x1, target_map, times = make_paired_windows(
@@ -1948,6 +2580,7 @@ def _evaluate_causal_sufficiency_variants(
                 rows.append(
                     {
                         "variant": variant.name,
+                        "variant_id": variant.variant_id,
                         "fold": int(fold.fold),
                         "target_shift": int(shift),
                         "target": target_name,
@@ -1958,7 +2591,31 @@ def _evaluate_causal_sufficiency_variants(
                         "rmse_delta_aug_minus_base": augmented_rmse - base_rmse,
                     }
                 )
-    return pd.DataFrame(rows)
+                blocks = assign_temporal_blocks(
+                    times[test_mask],
+                    block_size=config.uncertainty_block_size,
+                )
+                base_se = (y_test - base_pred) ** 2
+                augmented_se = (y_test - augmented_pred) ** 2
+                contributions = ratio_metric_contributions(
+                    augmented_se,
+                    base_se,
+                    blocks,
+                )
+                contributions.insert(0, "metric", "extra_history_improvement")
+                contributions.insert(0, "target", target_name)
+                contributions.insert(0, "target_shift", int(shift))
+                contributions.insert(0, "variant_id", variant.variant_id)
+                contributions.insert(0, "variant", variant.name)
+                contributions.insert(0, "fold", int(fold.fold))
+                contributions["block_size"] = int(config.uncertainty_block_size)
+                uncertainty_frames.append(contributions)
+    return (
+        pd.DataFrame(rows),
+        pd.concat(uncertainty_frames, ignore_index=True)
+        if uncertainty_frames
+        else pd.DataFrame(),
+    )
 
 
 def _empty_artifact_probe_metrics() -> pd.DataFrame:
@@ -1970,6 +2627,7 @@ def _empty_artifact_probe_metrics() -> pd.DataFrame:
             "local_center",
             "half_width",
             "variant",
+            "variant_id",
             "rmse",
         ]
     )
@@ -2008,6 +2666,9 @@ def _evaluate_artifact_probe_variants(
         for variant in variants
         if variant.name != raw.name
     }
+    candidate_ids = {
+        variant.name: variant.variant_id for variant in variants if variant.name != raw.name
+    }
     rows = []
     for global_center, local_center in center_pairs:
         table = pseudo_artifact_reconstruction_test(
@@ -2022,6 +2683,11 @@ def _evaluate_artifact_probe_variants(
         table.insert(1, "probe", "pseudo_reconstruction")
         table.insert(2, "artifact_center", int(global_center))
         table = table.rename(columns={"center": "local_center"})
+        table.insert(
+            table.columns.get_loc("variant") + 1,
+            "variant_id",
+            table["variant"].map(candidate_ids),
+        )
         rows.append(table)
     return (
         pd.concat(rows, ignore_index=True).reindex(
@@ -2267,11 +2933,11 @@ def _validate_fit_indices(indices: np.ndarray, n_samples: int) -> None:
         raise ValueError("Training indices are out of range.")
 
 
-def _validate_traces(traces: np.ndarray) -> np.ndarray:
+def _validate_traces(traces: np.ndarray, *, allow_nonfinite: bool = False) -> np.ndarray:
     traces = np.asarray(traces, dtype=float)
     if traces.ndim != 2:
         raise ValueError(f"traces must be 2D (time x features), got {traces.shape}.")
-    if not np.isfinite(traces).all():
+    if not allow_nonfinite and not np.isfinite(traces).all():
         raise ValueError("traces must be finite before strict evaluation.")
     return traces
 

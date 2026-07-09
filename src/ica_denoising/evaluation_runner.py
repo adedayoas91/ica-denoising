@@ -33,6 +33,7 @@ from ica_denoising.evaluation_diagnostics import (
     write_json_manifest,
 )
 from ica_denoising.evaluation_pipeline import EvaluationConfig, run_evaluation
+from ica_denoising.uncertainty import label_algorithmic_replicates
 
 
 STRICT_TUPLE_FIELDS = {
@@ -62,6 +63,7 @@ STRICT_TUPLE_FIELDS = {
     "artifact_probe_centers",
     "bss_random_states",
     "bss_rank_modes",
+    "nested_selection_policies",
 }
 NESTED_TUPLE_FIELDS = {"sobi_lag_sets"}
 CAUSAL_TUPLE_FIELDS = {"target_shifts"}
@@ -118,7 +120,7 @@ def run_dataset_evaluation(
         n_frames=traces.shape[0],
         bout_quantile=config.bout_quantile,
     )
-    result = run_evaluation(traces, targets, config)
+    result = run_evaluation(traces, targets, config, tail_angle=tail_angle)
     provenance = build_provenance_manifest([spec]).iloc[0].to_dict()
 
     output_root = (
@@ -136,18 +138,25 @@ def run_dataset_evaluation(
         "behavior_metrics": output_dir / "strict_behavior_fold_metrics.csv",
         "behavior_predictions": output_dir / "strict_behavior_predictions.csv",
         "behavior_uncertainty": output_dir / "strict_behavior_block_uncertainty.csv",
+        "trace_uncertainty": output_dir / "strict_trace_block_contributions.csv",
         "causal_metrics": output_dir / "strict_causal_fold_metrics.csv",
         "causal_embeddings": output_dir / "strict_causal_oof_embeddings.csv",
+        "causal_uncertainty": output_dir / "strict_causal_block_contributions.csv",
         "causal_sufficiency": output_dir / "strict_causal_sufficiency.csv",
+        "causal_sufficiency_uncertainty": output_dir
+        / "strict_causal_sufficiency_block_contributions.csv",
         "artifact_probe_metrics": output_dir / "strict_artifact_probe_metrics.csv",
         "causal_latent_correlations": output_dir
         / "strict_causal_oof_latent_behavior_correlations.csv",
         "leakage_audit": output_dir / "leakage_audit.csv",
         "component_selections": output_dir / "component_selections.csv",
         "cluster_stability": output_dir / "cluster_stability.csv",
+        "cluster_stability_algorithmic": output_dir
+        / "cluster_stability_algorithmic_replicates.csv",
         "cluster_stability_assignments": output_dir
         / "cluster_stability_assignments.csv",
         "variant_metadata": output_dir / "variant_metadata.csv",
+        "nested_selection": output_dir / "nested_selection.csv",
         "temporal_diagnostics": output_dir / "temporal_dependence_diagnostics.csv",
         "bpi_component_scores": output_dir / "bpi_component_scores.csv",
         "bpi_ablation": output_dir / "bpi_ablation.csv",
@@ -164,19 +173,33 @@ def run_dataset_evaluation(
         random_state=config.random_state,
     )
     behavior_uncertainty.to_csv(paths["behavior_uncertainty"], index=False)
+    result.trace_uncertainty.to_csv(paths["trace_uncertainty"], index=False)
     result.causal_metrics.to_csv(paths["causal_metrics"], index=False)
     result.causal_embeddings.to_csv(paths["causal_embeddings"], index=False)
+    result.causal_uncertainty.to_csv(paths["causal_uncertainty"], index=False)
     result.causal_sufficiency.to_csv(paths["causal_sufficiency"], index=False)
+    result.causal_sufficiency_uncertainty.to_csv(
+        paths["causal_sufficiency_uncertainty"], index=False
+    )
     result.artifact_probe_metrics.to_csv(paths["artifact_probe_metrics"], index=False)
     latent_correlations = compare_latent_graphs(result.causal_embeddings, lag=1)
     latent_correlations.to_csv(paths["causal_latent_correlations"], index=False)
     result.leakage_audit.to_csv(paths["leakage_audit"], index=False)
     result.component_selections.to_csv(paths["component_selections"], index=False)
     result.cluster_stability.to_csv(paths["cluster_stability"], index=False)
+    cluster_stability_algorithmic = (
+        label_algorithmic_replicates(result.cluster_stability)
+        if not result.cluster_stability.empty
+        else result.cluster_stability.copy()
+    )
+    cluster_stability_algorithmic.to_csv(
+        paths["cluster_stability_algorithmic"], index=False
+    )
     result.cluster_stability_assignments.to_csv(
         paths["cluster_stability_assignments"], index=False
     )
     result.variant_metadata.to_csv(paths["variant_metadata"], index=False)
+    result.nested_selection.to_csv(paths["nested_selection"], index=False)
     result.temporal_diagnostics.to_csv(paths["temporal_diagnostics"], index=False)
     bpi_component_scores = bpi_component_scores_from_behavior_metrics(
         result.behavior_metrics,
@@ -230,18 +253,25 @@ def run_dataset_evaluation(
                 "behavior_metrics": len(result.behavior_metrics),
                 "behavior_predictions": len(result.behavior_predictions),
                 "behavior_uncertainty": len(behavior_uncertainty),
+                "trace_uncertainty": len(result.trace_uncertainty),
                 "causal_metrics": len(result.causal_metrics),
                 "causal_embeddings": len(result.causal_embeddings),
+                "causal_uncertainty": len(result.causal_uncertainty),
                 "causal_sufficiency": len(result.causal_sufficiency),
+                "causal_sufficiency_uncertainty": len(
+                    result.causal_sufficiency_uncertainty
+                ),
                 "artifact_probe_metrics": len(result.artifact_probe_metrics),
                 "causal_latent_correlations": len(latent_correlations),
                 "leakage_audit": len(result.leakage_audit),
                 "component_selections": len(result.component_selections),
                 "cluster_stability": len(result.cluster_stability),
+                "cluster_stability_algorithmic": len(cluster_stability_algorithmic),
                 "cluster_stability_assignments": len(
                     result.cluster_stability_assignments
                 ),
                 "variant_metadata": len(result.variant_metadata),
+                "nested_selection": len(result.nested_selection),
                 "temporal_diagnostics": len(result.temporal_diagnostics),
                 "bpi_component_scores": len(bpi_component_scores),
                 "bpi_ablation": len(bpi_ablation),
@@ -325,11 +355,15 @@ def write_recording_aggregate(
     registry = dataset_registry(project_root)
     behavior_frames = []
     uncertainty_frames = []
+    trace_uncertainty_frames = []
     causal_frames = []
+    causal_uncertainty_frames = []
     causal_sufficiency_frames = []
+    causal_sufficiency_uncertainty_frames = []
     artifact_probe_frames = []
     bpi_frames = []
     trace_frames = []
+    nested_selection_frames = []
     for dataset_key, paths in completed.items():
         spec = registry[dataset_key]
         metadata = {
@@ -343,10 +377,14 @@ def write_recording_aggregate(
             ("trace_metrics", trace_frames),
             ("behavior_metrics", behavior_frames),
             ("behavior_uncertainty", uncertainty_frames),
+            ("trace_uncertainty", trace_uncertainty_frames),
             ("causal_metrics", causal_frames),
+            ("causal_uncertainty", causal_uncertainty_frames),
             ("causal_sufficiency", causal_sufficiency_frames),
+            ("causal_sufficiency_uncertainty", causal_sufficiency_uncertainty_frames),
             ("artifact_probe_metrics", artifact_probe_frames),
             ("bpi_ablation", bpi_frames),
+            ("nested_selection", nested_selection_frames),
         ):
             if label not in paths:
                 continue
@@ -360,10 +398,25 @@ def write_recording_aggregate(
     trace = pd.concat(trace_frames, ignore_index=True)
     behavior = pd.concat(behavior_frames, ignore_index=True)
     uncertainty = pd.concat(uncertainty_frames, ignore_index=True)
+    trace_uncertainty = (
+        pd.concat(trace_uncertainty_frames, ignore_index=True)
+        if trace_uncertainty_frames
+        else pd.DataFrame()
+    )
     causal = pd.concat(causal_frames, ignore_index=True)
+    causal_uncertainty = (
+        pd.concat(causal_uncertainty_frames, ignore_index=True)
+        if causal_uncertainty_frames
+        else pd.DataFrame()
+    )
     causal_sufficiency = (
         pd.concat(causal_sufficiency_frames, ignore_index=True)
         if causal_sufficiency_frames
+        else pd.DataFrame()
+    )
+    causal_sufficiency_uncertainty = (
+        pd.concat(causal_sufficiency_uncertainty_frames, ignore_index=True)
+        if causal_sufficiency_uncertainty_frames
         else pd.DataFrame()
     )
     artifact_probe = (
@@ -372,25 +425,41 @@ def write_recording_aggregate(
         else pd.DataFrame()
     )
     bpi = pd.concat(bpi_frames, ignore_index=True)
+    nested_selection = (
+        pd.concat(nested_selection_frames, ignore_index=True)
+        if nested_selection_frames
+        else pd.DataFrame()
+    )
     paths = {
         "trace": aggregate_dir / "recording_trace_preservation_metrics.csv",
         "behavior": aggregate_dir / "recording_behavior_fold_metrics.csv",
         "behavior_uncertainty": aggregate_dir
         / "recording_behavior_block_uncertainty.csv",
+        "trace_uncertainty": aggregate_dir / "recording_trace_block_contributions.csv",
         "causal": aggregate_dir / "recording_causal_fold_metrics.csv",
+        "causal_uncertainty": aggregate_dir / "recording_causal_block_contributions.csv",
         "causal_sufficiency": aggregate_dir / "recording_causal_sufficiency.csv",
+        "causal_sufficiency_uncertainty": aggregate_dir
+        / "recording_causal_sufficiency_block_contributions.csv",
         "artifact_probe": aggregate_dir / "recording_artifact_probe_metrics.csv",
         "bpi": aggregate_dir / "recording_bpi_ablation.csv",
+        "nested_selection": aggregate_dir / "recording_nested_selection.csv",
         "primary_effects": aggregate_dir / "recording_primary_effects.csv",
         "fish_primary_effects": aggregate_dir / "fish_primary_effects.csv",
     }
     trace.to_csv(paths["trace"], index=False)
     behavior.to_csv(paths["behavior"], index=False)
     uncertainty.to_csv(paths["behavior_uncertainty"], index=False)
+    trace_uncertainty.to_csv(paths["trace_uncertainty"], index=False)
     causal.to_csv(paths["causal"], index=False)
+    causal_uncertainty.to_csv(paths["causal_uncertainty"], index=False)
     causal_sufficiency.to_csv(paths["causal_sufficiency"], index=False)
+    causal_sufficiency_uncertainty.to_csv(
+        paths["causal_sufficiency_uncertainty"], index=False
+    )
     artifact_probe.to_csv(paths["artifact_probe"], index=False)
     bpi.to_csv(paths["bpi"], index=False)
+    nested_selection.to_csv(paths["nested_selection"], index=False)
     _primary_unit_effects(behavior, causal, unit_col="recording").to_csv(
         paths["primary_effects"], index=False
     )
@@ -474,7 +543,8 @@ def bpi_component_scores_from_behavior_metrics(
     if metrics.empty:
         return pd.DataFrame()
     if "target_variant" in metrics:
-        metrics = metrics[metrics["target_variant"] == "primary"]
+        primary_mask = metrics["target_variant"].isin(["primary", "input_local"])
+        metrics = metrics[primary_mask] if primary_mask.any() else metrics
     components = (
         (
             "tail_vigor_within",

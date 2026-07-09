@@ -17,6 +17,7 @@ from typing import Optional
 
 import numpy as np
 import pandas as pd
+from sklearn.decomposition import PCA
 
 from csl.experiments import graph_metrics as gm
 from csl.experiments.simulation_adapters import ESTIMATORS
@@ -104,6 +105,44 @@ def _graph_estimate_for_variant(
     return fn(traces)
 
 
+def _rank_targets(cfg: SimulationConfig, traces: np.ndarray) -> tuple[tuple[str, int], ...]:
+    """Resolve configured BSS rank modes to concrete reconstruction ranks."""
+
+    n_max = min(traces.shape)
+    rows: list[tuple[str, int]] = []
+    x = np.asarray(traces, dtype=float).T
+    for mode in cfg.bss.ranks:
+        token = str(mode).lower()
+        if token == "full":
+            rank = n_max
+        elif token.startswith("ev"):
+            threshold = float(token.removeprefix("ev")) / 100.0
+            if not 0.0 < threshold <= 1.0:
+                raise ValueError(f"Invalid BSS rank mode: {mode!r}")
+            pca = PCA(n_components=n_max).fit(x)
+            cumulative = np.cumsum(pca.explained_variance_ratio_)
+            rank = int(np.searchsorted(cumulative, threshold, side="left") + 1)
+        elif token.startswith("rank"):
+            rank = int(token.removeprefix("rank").strip("_"))
+        else:
+            raise ValueError(f"Unknown BSS rank mode: {mode!r}")
+        rows.append((token, max(1, min(int(rank), n_max))))
+    if not rows:
+        rows.append(("full", n_max))
+    return tuple(dict.fromkeys(rows))
+
+
+def _select_scored_graph(est, correction: str) -> tuple[np.ndarray, str]:
+    correction = str(correction).lower()
+    if correction == "none":
+        return np.asarray(est.binary, dtype=int), "none"
+    if correction == "fdr":
+        if est.binary_fdr is not None:
+            return np.asarray(est.binary_fdr, dtype=int), "fdr"
+        return np.asarray(est.binary, dtype=int), "fdr_unavailable"
+    raise ValueError(f"Unknown graph correction: {correction!r}")
+
+
 def run_replicate(
     cfg: SimulationConfig,
     scenario: ScenarioConfig,
@@ -120,6 +159,7 @@ def run_replicate(
     dataset.save(out_dir / "dataset.npz")
 
     rank_target = max(2, int(0.8 * dataset.clean_fluorescence.shape[0]))
+    bss_random_states = cfg.bss.random_states or (cfg.seed,)
     variants = build_variants(
         clean=dataset.clean_fluorescence,
         corrupted=dataset.corrupted,
@@ -127,9 +167,12 @@ def run_replicate(
         methods=cfg.bss.methods,
         keep_top=cfg.bss.keep_top,
         rank_target=rank_target,
-        random_state=cfg.bss.random_states[0],
+        random_state=bss_random_states[0],
         sample_rate_hz=cfg.sample_rate_hz,
         lowpass_cutoff_hz=cfg.bss.lowpass_cutoff_hz,
+        rank_targets=_rank_targets(cfg, dataset.corrupted),
+        random_states=bss_random_states,
+        sobi_lag_sets=cfg.bss.sobi_lag_sets,
     )
 
     variant_rows = []
@@ -143,16 +186,20 @@ def run_replicate(
     if cfg.estimator.run_pcmci and "pcmci" not in estimators:
         estimators.append("pcmci")
 
-    truth = dataset.truth_adjacency
+    n_observed = dataset.clean_fluorescence.shape[0]
+    truth = dataset.truth_adjacency[:n_observed, :n_observed]
 
     # estimate clean-oracle graphs first for reference Jaccard overlap.
     clean_variant = next(v for v in variants if v.variant_id == "clean")
     clean_refs: dict[str, np.ndarray] = {}
     for estimator in estimators:
         try:
-            clean_refs[estimator] = _graph_estimate_for_variant(
+            clean_est = _graph_estimate_for_variant(
                 estimator, clean_variant.traces, cfg
-            ).binary
+            )
+            clean_refs[estimator] = _select_scored_graph(
+                clean_est, cfg.estimator.correction
+            )[0]
         except Exception as exc:  # pragma: no cover
             failures.append({"variant": "clean", "estimator": estimator, "error": str(exc)})
 
@@ -165,6 +212,9 @@ def run_replicate(
                 "reconstruction_rank": variant.reconstruction_rank,
                 "explained_variance_ratio": variant.explained_variance_ratio,
                 "uses_ground_truth": variant.uses_ground_truth,
+                "rank_mode": variant.rank_mode,
+                "random_state": variant.random_state,
+                "sobi_lags": " ".join(str(lag) for lag in variant.sobi_lags),
             }
         )
         tm = trace_metrics(variant.traces, dataset.clean_fluorescence, dataset.artifact)
@@ -190,13 +240,23 @@ def run_replicate(
                     {"variant": variant.variant_id, "estimator": estimator, "error": str(exc)}
                 )
                 continue
+            scored_binary, graph_correction = _select_scored_graph(
+                est, cfg.estimator.correction
+            )
             gpath = out_dir / "graphs" / estimator / f"{_safe(variant.variant_id)}.npz"
             gpath.parent.mkdir(parents=True, exist_ok=True)
-            np.savez_compressed(
-                gpath, scores=est.scores, binary=est.binary, trace_hash=trace_hash
-            )
+            payload = {
+                "scores": est.scores,
+                "binary": est.binary,
+                "scored_binary": scored_binary,
+                "trace_hash": trace_hash,
+                "graph_correction": graph_correction,
+            }
+            if est.binary_fdr is not None:
+                payload["binary_fdr"] = est.binary_fdr
+            np.savez_compressed(gpath, **payload)
             metrics = gm.graph_recovery_metrics(
-                est.binary,
+                scored_binary,
                 truth,
                 scores=est.scores,
                 reference=clean_refs.get(estimator),
@@ -206,6 +266,7 @@ def run_replicate(
                     "variant_id": variant.variant_id,
                     "estimator": estimator,
                     "trace_hash": trace_hash,
+                    "graph_correction": graph_correction,
                 }
             )
             graph_rows.append(metrics)
@@ -215,6 +276,7 @@ def run_replicate(
     _write_csv(out_dir / "behavior_metrics.csv", behavior_rows)
     _write_csv(out_dir / "state_metrics.csv", state_rows)
     _write_csv(out_dir / "graph_metrics.csv", graph_rows)
+    _write_csv(out_dir / "failures.csv", failures)
 
     ended = datetime.now(timezone.utc)
     manifest = {
@@ -232,7 +294,7 @@ def run_replicate(
         "runtime_seconds": (ended - started).total_seconds(),
         "n_variants": len(variant_rows),
         "failures": failures,
-        "complete": True,
+        "complete": len(failures) == 0,
     }
     (out_dir / "manifest.json").write_text(json.dumps(manifest, indent=2))
     logger.info("Replicate %s/seed_%s complete in %.1fs", scenario.scenario_id, seed, manifest["runtime_seconds"])
