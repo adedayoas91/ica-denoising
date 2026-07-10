@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field, fields, replace
 import hashlib
 import json
 from pathlib import Path
@@ -276,6 +276,25 @@ class EvaluationResult:
     trace_uncertainty: pd.DataFrame
     causal_uncertainty: pd.DataFrame
     causal_sufficiency_uncertainty: pd.DataFrame
+
+
+def merge_evaluation_results(results: Sequence[EvaluationResult]) -> EvaluationResult:
+    """Merge fold-level evaluation results into the dataset-level result shape."""
+
+    if not results:
+        raise ValueError("At least one evaluation result is required.")
+    merged: dict[str, pd.DataFrame] = {}
+    for result_field in fields(EvaluationResult):
+        name = result_field.name
+        frames = [
+            frame
+            for frame in (getattr(result, name) for result in results)
+            if not frame.empty
+        ]
+        merged[name] = (
+            pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+        )
+    return EvaluationResult(**merged)
 
 
 def make_strict_folds(
@@ -817,6 +836,33 @@ def run_evaluation(
     *,
     tail_angle: np.ndarray | None = None,
 ) -> EvaluationResult:
+    return merge_evaluation_results(
+        [
+            result
+            for _fold_id, result in iter_evaluation_folds(
+                traces,
+                targets,
+                config,
+                tail_angle=tail_angle,
+            )
+        ]
+    )
+
+
+def iter_evaluation_folds(
+    traces: np.ndarray,
+    targets: BehaviorTargets | None,
+    config: EvaluationConfig,
+    *,
+    tail_angle: np.ndarray | None = None,
+    fold_ids: Iterable[int] | None = None,
+) -> Iterable[tuple[int, EvaluationResult]]:
+    """Yield one strict-fold result at a time.
+
+    This preserves the dataset-level logic used by :func:`run_evaluation`, but
+    exposes a fold boundary for long-running notebook checkpointing.
+    """
+
     traces = _validate_traces(traces, allow_nonfinite=config.input_local)
     if config.input_local:
         if tail_angle is None:
@@ -835,122 +881,106 @@ def run_evaluation(
         gap=config.gap,
         required_gap=required_gap,
     )
-    behavior_rows: list[dict[str, object]] = []
-    prediction_frames: list[pd.DataFrame] = []
-    causal_rows: list[dict[str, object]] = []
-    embedding_rows: list[dict[str, object]] = []
-    sufficiency_frames: list[pd.DataFrame] = []
-    artifact_probe_frames: list[pd.DataFrame] = []
-    audit_rows: list[dict[str, object]] = []
-    selection_rows: list[dict[str, object]] = []
-    stability_frames: list[pd.DataFrame] = []
-    stability_assignment_frames: list[pd.DataFrame] = []
-    variant_metadata_rows: list[dict[str, object]] = []
-    temporal_frames: list[pd.DataFrame] = []
-    trace_metric_frames: list[pd.DataFrame] = []
-    trace_uncertainty_frames: list[pd.DataFrame] = []
-    causal_uncertainty_frames: list[pd.DataFrame] = []
-    sufficiency_uncertainty_frames: list[pd.DataFrame] = []
-    nested_selection_frames: list[pd.DataFrame] = []
-
+    selected_folds = (
+        None if fold_ids is None else {int(fold_id) for fold_id in fold_ids}
+    )
     for fold in folds:
-        fold_traces, fold_targets, input_audit = _resolve_fold_inputs(
+        if selected_folds is not None and fold.fold not in selected_folds:
+            continue
+        yield fold.fold, _evaluate_one_fold(
             traces,
             targets,
             tail_angle=tail_angle,
             fold=fold,
             config=config,
         )
-        (
-            variants,
-            fold_audit,
-            fold_selections,
-            fold_stability,
-            fold_stability_assignments,
-        ) = make_fold_variants(fold_traces, fold, config)
-        audit_rows.extend(input_audit)
-        audit_rows.extend(fold_audit)
-        audit_rows.extend(_downstream_audit_rows(fold, variants))
-        selection_rows.extend(fold_selections)
-        variant_metadata_rows.extend(
-            {
-                "fold": fold.fold,
-                "variant": variant.name,
-                "variant_id": variant.variant_id,
-                "family": variant.family,
-                "trace_hash": _hash_array(variant.traces),
-                "reconstruction_rank": _variant_reconstruction_rank(variant.metadata),
-                "explained_variance_ratio": _variant_explained_variance(
-                    variant.metadata
-                ),
-                "rank_mode": variant.metadata.get("rank_mode"),
-                "metadata_json": json.dumps(dict(variant.metadata), sort_keys=True),
-            }
-            for variant in variants
-        )
-        if not fold_stability.empty:
-            stability_frames.append(fold_stability)
-        if not fold_stability_assignments.empty:
-            stability_assignment_frames.append(fold_stability_assignments)
-        trace_metric_frames.append(_held_out_trace_metrics(variants, fold, config))
-        trace_uncertainty_frames.append(
-            _held_out_trace_uncertainty(variants, fold, config)
-        )
-        fold_behavior, fold_predictions = _evaluate_behavior_variants(
-            variants, fold_targets, fold, config
-        )
-        behavior_rows.extend(fold_behavior)
-        prediction_frames.extend(fold_predictions)
-        fold_causal, fold_embeddings, fold_causal_uncertainty = (
-            _evaluate_causal_variants(variants, fold_targets, fold, config)
-        )
-        causal_rows.extend(fold_causal)
-        embedding_rows.extend(fold_embeddings)
-        if not fold_causal_uncertainty.empty:
-            causal_uncertainty_frames.append(fold_causal_uncertainty)
-        sufficiency, sufficiency_uncertainty = _evaluate_causal_sufficiency_variants(
-            variants, fold_targets, fold, config
-        )
-        if not sufficiency.empty:
-            sufficiency_frames.append(sufficiency)
-        if not sufficiency_uncertainty.empty:
-            sufficiency_uncertainty_frames.append(sufficiency_uncertainty)
-        artifact_probe = _evaluate_artifact_probe_variants(variants, fold, config)
-        if not artifact_probe.empty:
-            artifact_probe_frames.append(artifact_probe)
-        nested = _nested_selection_report(
-            variants,
-            fold_targets,
-            fold,
-            config,
-            trace_metric_frames[-1],
-            fold_behavior,
-        )
-        if not nested.empty:
-            nested_selection_frames.append(nested)
 
-        test_variants = {
-            variant.name: variant.traces[fold.test_idx]
-            for variant in variants
-            if variant.name != "raw"
+
+def _evaluate_one_fold(
+    traces: np.ndarray,
+    targets: BehaviorTargets | None,
+    *,
+    tail_angle: np.ndarray | None,
+    fold: StrictFold,
+    config: EvaluationConfig,
+) -> EvaluationResult:
+    fold_traces, fold_targets, input_audit = _resolve_fold_inputs(
+        traces,
+        targets,
+        tail_angle=tail_angle,
+        fold=fold,
+        config=config,
+    )
+    (
+        variants,
+        fold_audit,
+        fold_selections,
+        fold_stability,
+        fold_stability_assignments,
+    ) = make_fold_variants(fold_traces, fold, config)
+    audit_rows = [
+        *input_audit,
+        *fold_audit,
+        *_downstream_audit_rows(fold, variants),
+    ]
+    variant_metadata_rows = [
+        {
+            "fold": fold.fold,
+            "variant": variant.name,
+            "variant_id": variant.variant_id,
+            "family": variant.family,
+            "trace_hash": _hash_array(variant.traces),
+            "reconstruction_rank": _variant_reconstruction_rank(variant.metadata),
+            "explained_variance_ratio": _variant_explained_variance(
+                variant.metadata
+            ),
+            "rank_mode": variant.metadata.get("rank_mode"),
+            "metadata_json": json.dumps(dict(variant.metadata), sort_keys=True),
         }
-        valid_lags = tuple(
-            lag
-            for lag in sorted(set((*config.decoder_lags, *config.sobi_lags)))
-            if 0 < lag < fold.test_idx.size
+        for variant in variants
+    ]
+    trace_metrics = _held_out_trace_metrics(variants, fold, config)
+    trace_uncertainty = _held_out_trace_uncertainty(variants, fold, config)
+    behavior_rows, prediction_frames = _evaluate_behavior_variants(
+        variants, fold_targets, fold, config
+    )
+    causal_rows, embedding_rows, causal_uncertainty = _evaluate_causal_variants(
+        variants, fold_targets, fold, config
+    )
+    causal_sufficiency, causal_sufficiency_uncertainty = (
+        _evaluate_causal_sufficiency_variants(variants, fold_targets, fold, config)
+    )
+    artifact_probe = _evaluate_artifact_probe_variants(variants, fold, config)
+    nested_selection = _nested_selection_report(
+        variants,
+        fold_targets,
+        fold,
+        config,
+        trace_metrics,
+        behavior_rows,
+    )
+    temporal = pd.DataFrame()
+    test_variants = {
+        variant.name: variant.traces[fold.test_idx]
+        for variant in variants
+        if variant.name != "raw"
+    }
+    valid_lags = tuple(
+        lag
+        for lag in sorted(set((*config.decoder_lags, *config.sobi_lags)))
+        if 0 < lag < fold.test_idx.size
+    )
+    if valid_lags and test_variants:
+        temporal = temporal_dependence_diagnostics(
+            fold_traces[fold.test_idx],
+            test_variants,
+            lags=valid_lags,
+            sample_rate_hz=config.sample_rate_hz,
         )
-        if valid_lags and test_variants:
-            temporal = temporal_dependence_diagnostics(
-                fold_traces[fold.test_idx],
-                test_variants,
-                lags=valid_lags,
-                sample_rate_hz=config.sample_rate_hz,
-            )
-            temporal.insert(0, "fold", fold.fold)
-            temporal_frames.append(temporal)
+        temporal.insert(0, "fold", fold.fold)
 
     return EvaluationResult(
-        trace_metrics=pd.concat(trace_metric_frames, ignore_index=True),
+        trace_metrics=trace_metrics,
         behavior_metrics=pd.DataFrame(behavior_rows),
         behavior_predictions=(
             pd.concat(prediction_frames, ignore_index=True)
@@ -959,54 +989,18 @@ def run_evaluation(
         ),
         causal_metrics=pd.DataFrame(causal_rows),
         causal_embeddings=pd.DataFrame(embedding_rows),
-        causal_sufficiency=(
-            pd.concat(sufficiency_frames, ignore_index=True)
-            if sufficiency_frames
-            else pd.DataFrame()
-        ),
-        artifact_probe_metrics=(
-            pd.concat(artifact_probe_frames, ignore_index=True)
-            if artifact_probe_frames
-            else pd.DataFrame()
-        ),
+        causal_sufficiency=causal_sufficiency,
+        artifact_probe_metrics=artifact_probe,
         leakage_audit=pd.DataFrame(audit_rows),
-        component_selections=pd.DataFrame(selection_rows),
-        cluster_stability=(
-            pd.concat(stability_frames, ignore_index=True)
-            if stability_frames
-            else pd.DataFrame()
-        ),
-        cluster_stability_assignments=(
-            pd.concat(stability_assignment_frames, ignore_index=True)
-            if stability_assignment_frames
-            else pd.DataFrame()
-        ),
+        component_selections=pd.DataFrame(fold_selections),
+        cluster_stability=fold_stability,
+        cluster_stability_assignments=fold_stability_assignments,
         variant_metadata=pd.DataFrame(variant_metadata_rows),
-        temporal_diagnostics=(
-            pd.concat(temporal_frames, ignore_index=True)
-            if temporal_frames
-            else pd.DataFrame()
-        ),
-        nested_selection=(
-            pd.concat(nested_selection_frames, ignore_index=True)
-            if nested_selection_frames
-            else pd.DataFrame()
-        ),
-        trace_uncertainty=(
-            pd.concat(trace_uncertainty_frames, ignore_index=True)
-            if trace_uncertainty_frames
-            else pd.DataFrame()
-        ),
-        causal_uncertainty=(
-            pd.concat(causal_uncertainty_frames, ignore_index=True)
-            if causal_uncertainty_frames
-            else pd.DataFrame()
-        ),
-        causal_sufficiency_uncertainty=(
-            pd.concat(sufficiency_uncertainty_frames, ignore_index=True)
-            if sufficiency_uncertainty_frames
-            else pd.DataFrame()
-        ),
+        temporal_diagnostics=temporal,
+        nested_selection=nested_selection,
+        trace_uncertainty=trace_uncertainty,
+        causal_uncertainty=causal_uncertainty,
+        causal_sufficiency_uncertainty=causal_sufficiency_uncertainty,
     )
 
 

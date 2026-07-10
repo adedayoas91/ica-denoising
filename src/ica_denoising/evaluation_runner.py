@@ -1,16 +1,17 @@
 from __future__ import annotations
 
 import argparse
-from dataclasses import asdict
+from dataclasses import asdict, fields
 from datetime import datetime, timezone
+import hashlib
 import json
 from pathlib import Path
-from typing import Mapping
+from typing import Callable, Mapping
 
 import numpy as np
 import pandas as pd
 
-from ica_denoising.behavior_decoding import make_behavior_targets
+from ica_denoising.behavior_decoding import BehaviorTargets, make_behavior_targets
 from ica_denoising.bss_notebook import (
     DatasetSpec,
     add_project_imports,
@@ -32,7 +33,13 @@ from ica_denoising.evaluation_diagnostics import (
     summarize_recording_effects,
     write_json_manifest,
 )
-from ica_denoising.evaluation_pipeline import EvaluationConfig, run_evaluation
+from ica_denoising.evaluation_pipeline import (
+    EvaluationConfig,
+    EvaluationResult,
+    iter_evaluation_folds,
+    merge_evaluation_results,
+    run_evaluation,
+)
 from ica_denoising.uncertainty import label_algorithmic_replicates
 
 
@@ -67,6 +74,7 @@ STRICT_TUPLE_FIELDS = {
 }
 NESTED_TUPLE_FIELDS = {"sobi_lag_sets"}
 CAUSAL_TUPLE_FIELDS = {"target_shifts"}
+ProgressCallback = Callable[[Mapping[str, object]], None]
 
 
 def load_evaluation_config(
@@ -94,6 +102,31 @@ def load_evaluation_config(
     return EvaluationConfig(**payload)
 
 
+def dataset_evaluation_output_paths(
+    dataset_key: str,
+    *,
+    project_root: Path | None = None,
+    output_root: Path | None = None,
+    output_data_name_override: str | None = None,
+) -> dict[str, Path]:
+    """Return the standard per-recording output paths without running evaluation."""
+
+    project_root = add_project_imports(
+        resolve_project_root() if project_root is None else Path(project_root)
+    )
+    spec = get_dataset(dataset_key, project_root)
+    output_root = (
+        project_root / "outputs" / "evaluation"
+        if output_root is None
+        else Path(output_root)
+    )
+    output_dir = output_root / spec.group / _dataset_output_name(
+        spec,
+        output_data_name_override=output_data_name_override,
+    )
+    return _evaluation_output_paths(output_dir)
+
+
 def run_dataset_evaluation(
     dataset_key: str,
     *,
@@ -101,6 +134,9 @@ def run_dataset_evaluation(
     config_path: Path | None = None,
     output_root: Path | None = None,
     output_data_name_override: str | None = None,
+    resume: bool = False,
+    checkpoint_root: Path | None = None,
+    progress_callback: ProgressCallback | None = None,
 ) -> dict[str, Path]:
     project_root = add_project_imports(
         resolve_project_root() if project_root is None else Path(project_root)
@@ -120,48 +156,32 @@ def run_dataset_evaluation(
         n_frames=traces.shape[0],
         bout_quantile=config.bout_quantile,
     )
-    result = run_evaluation(traces, targets, config, tail_angle=tail_angle)
-    provenance = build_provenance_manifest([spec]).iloc[0].to_dict()
-
     output_root = (
         project_root / "outputs" / "evaluation"
         if output_root is None
         else Path(output_root)
     )
-    output_name = spec.recording_id or spec.data_name
-    if output_data_name_override:
-        output_name = output_data_name_override
+    output_name = _dataset_output_name(
+        spec,
+        output_data_name_override=output_data_name_override,
+    )
     output_dir = output_root / spec.group / output_name
     output_dir.mkdir(parents=True, exist_ok=True)
-    paths = {
-        "trace_metrics": output_dir / "strict_trace_preservation_metrics.csv",
-        "behavior_metrics": output_dir / "strict_behavior_fold_metrics.csv",
-        "behavior_predictions": output_dir / "strict_behavior_predictions.csv",
-        "behavior_uncertainty": output_dir / "strict_behavior_block_uncertainty.csv",
-        "trace_uncertainty": output_dir / "strict_trace_block_contributions.csv",
-        "causal_metrics": output_dir / "strict_causal_fold_metrics.csv",
-        "causal_embeddings": output_dir / "strict_causal_oof_embeddings.csv",
-        "causal_uncertainty": output_dir / "strict_causal_block_contributions.csv",
-        "causal_sufficiency": output_dir / "strict_causal_sufficiency.csv",
-        "causal_sufficiency_uncertainty": output_dir
-        / "strict_causal_sufficiency_block_contributions.csv",
-        "artifact_probe_metrics": output_dir / "strict_artifact_probe_metrics.csv",
-        "causal_latent_correlations": output_dir
-        / "strict_causal_oof_latent_behavior_correlations.csv",
-        "leakage_audit": output_dir / "leakage_audit.csv",
-        "component_selections": output_dir / "component_selections.csv",
-        "cluster_stability": output_dir / "cluster_stability.csv",
-        "cluster_stability_algorithmic": output_dir
-        / "cluster_stability_algorithmic_replicates.csv",
-        "cluster_stability_assignments": output_dir
-        / "cluster_stability_assignments.csv",
-        "variant_metadata": output_dir / "variant_metadata.csv",
-        "nested_selection": output_dir / "nested_selection.csv",
-        "temporal_diagnostics": output_dir / "temporal_dependence_diagnostics.csv",
-        "bpi_component_scores": output_dir / "bpi_component_scores.csv",
-        "bpi_ablation": output_dir / "bpi_ablation.csv",
-        "run_manifest": output_dir / "run_manifest.json",
-    }
+    paths = _evaluation_output_paths(output_dir)
+    if resume:
+        result = _run_evaluation_with_fold_checkpoints(
+            dataset_key,
+            traces,
+            targets,
+            config,
+            tail_angle=tail_angle,
+            output_dir=output_dir,
+            checkpoint_root=checkpoint_root,
+            progress_callback=progress_callback,
+        )
+    else:
+        result = run_evaluation(traces, targets, config, tail_angle=tail_angle)
+    provenance = build_provenance_manifest([spec]).iloc[0].to_dict()
     result.trace_metrics.to_csv(paths["trace_metrics"], index=False)
     result.behavior_metrics.to_csv(paths["behavior_metrics"], index=False)
     result.behavior_predictions.to_csv(paths["behavior_predictions"], index=False)
@@ -281,6 +301,203 @@ def run_dataset_evaluation(
     return paths
 
 
+def _dataset_output_name(
+    spec: DatasetSpec,
+    *,
+    output_data_name_override: str | None,
+) -> str:
+    return output_data_name_override or spec.recording_id or spec.data_name
+
+
+def _evaluation_output_paths(output_dir: Path) -> dict[str, Path]:
+    return {
+        "trace_metrics": output_dir / "strict_trace_preservation_metrics.csv",
+        "behavior_metrics": output_dir / "strict_behavior_fold_metrics.csv",
+        "behavior_predictions": output_dir / "strict_behavior_predictions.csv",
+        "behavior_uncertainty": output_dir / "strict_behavior_block_uncertainty.csv",
+        "trace_uncertainty": output_dir / "strict_trace_block_contributions.csv",
+        "causal_metrics": output_dir / "strict_causal_fold_metrics.csv",
+        "causal_embeddings": output_dir / "strict_causal_oof_embeddings.csv",
+        "causal_uncertainty": output_dir / "strict_causal_block_contributions.csv",
+        "causal_sufficiency": output_dir / "strict_causal_sufficiency.csv",
+        "causal_sufficiency_uncertainty": output_dir
+        / "strict_causal_sufficiency_block_contributions.csv",
+        "artifact_probe_metrics": output_dir / "strict_artifact_probe_metrics.csv",
+        "causal_latent_correlations": output_dir
+        / "strict_causal_oof_latent_behavior_correlations.csv",
+        "leakage_audit": output_dir / "leakage_audit.csv",
+        "component_selections": output_dir / "component_selections.csv",
+        "cluster_stability": output_dir / "cluster_stability.csv",
+        "cluster_stability_algorithmic": output_dir
+        / "cluster_stability_algorithmic_replicates.csv",
+        "cluster_stability_assignments": output_dir
+        / "cluster_stability_assignments.csv",
+        "variant_metadata": output_dir / "variant_metadata.csv",
+        "nested_selection": output_dir / "nested_selection.csv",
+        "temporal_diagnostics": output_dir / "temporal_dependence_diagnostics.csv",
+        "bpi_component_scores": output_dir / "bpi_component_scores.csv",
+        "bpi_ablation": output_dir / "bpi_ablation.csv",
+        "run_manifest": output_dir / "run_manifest.json",
+    }
+
+
+def _run_evaluation_with_fold_checkpoints(
+    dataset_key: str,
+    traces: np.ndarray,
+    targets: BehaviorTargets | None,
+    config: EvaluationConfig,
+    *,
+    tail_angle: np.ndarray | None,
+    output_dir: Path,
+    checkpoint_root: Path | None,
+    progress_callback: ProgressCallback | None,
+) -> EvaluationResult:
+    checkpoint_dir = _evaluation_checkpoint_dir(
+        dataset_key,
+        config,
+        output_dir=output_dir,
+        checkpoint_root=checkpoint_root,
+    )
+    checkpoint_dir.mkdir(parents=True, exist_ok=True)
+    fold_results: dict[int, EvaluationResult] = {}
+    total = int(config.n_splits)
+    for fold_id in range(total):
+        fold_dir = checkpoint_dir / f"fold_{fold_id}"
+        if not _fold_checkpoint_complete(fold_dir):
+            continue
+        fold_results[fold_id] = _read_fold_checkpoint(fold_dir)
+        _notify_progress(
+            progress_callback,
+            event="loaded",
+            dataset_key=dataset_key,
+            fold=fold_id,
+            completed=len(fold_results),
+            total=total,
+            checkpoint_dir=checkpoint_dir,
+        )
+
+    missing_folds = [
+        fold_id for fold_id in range(total) if fold_id not in fold_results
+    ]
+    for fold_id, result in iter_evaluation_folds(
+        traces,
+        targets,
+        config,
+        tail_angle=tail_angle,
+        fold_ids=missing_folds,
+    ):
+        _notify_progress(
+            progress_callback,
+            event="start",
+            dataset_key=dataset_key,
+            fold=fold_id,
+            completed=len(fold_results),
+            total=total,
+            checkpoint_dir=checkpoint_dir,
+        )
+        _write_fold_checkpoint(checkpoint_dir / f"fold_{fold_id}", fold_id, result)
+        fold_results[fold_id] = result
+        _notify_progress(
+            progress_callback,
+            event="done",
+            dataset_key=dataset_key,
+            fold=fold_id,
+            completed=len(fold_results),
+            total=total,
+            checkpoint_dir=checkpoint_dir,
+        )
+
+    if len(fold_results) != total:
+        raise RuntimeError(
+            f"Expected {total} completed folds, found {len(fold_results)}."
+        )
+    _notify_progress(
+        progress_callback,
+        event="complete",
+        dataset_key=dataset_key,
+        fold=None,
+        completed=len(fold_results),
+        total=total,
+        checkpoint_dir=checkpoint_dir,
+    )
+    return merge_evaluation_results(
+        [fold_results[fold_id] for fold_id in sorted(fold_results)]
+    )
+
+
+def _evaluation_checkpoint_dir(
+    dataset_key: str,
+    config: EvaluationConfig,
+    *,
+    output_dir: Path,
+    checkpoint_root: Path | None,
+) -> Path:
+    root = (
+        output_dir / ".strict_fold_checkpoints"
+        if checkpoint_root is None
+        else Path(checkpoint_root)
+    )
+    return root / _evaluation_checkpoint_fingerprint(dataset_key, config)
+
+
+def _evaluation_checkpoint_fingerprint(
+    dataset_key: str,
+    config: EvaluationConfig,
+) -> str:
+    payload = {
+        "dataset_key": dataset_key,
+        "config": asdict(config),
+        "checkpoint_schema": 1,
+    }
+    encoded = json.dumps(payload, sort_keys=True, default=str).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()[:16]
+
+
+def _fold_checkpoint_complete(fold_dir: Path) -> bool:
+    return (fold_dir / "done.json").exists()
+
+
+def _write_fold_checkpoint(
+    fold_dir: Path,
+    fold_id: int,
+    result: EvaluationResult,
+) -> None:
+    fold_dir.mkdir(parents=True, exist_ok=True)
+    table_rows = {}
+    for result_field in fields(EvaluationResult):
+        name = result_field.name
+        frame = getattr(result, name)
+        table_rows[name] = int(len(frame))
+        if frame.empty:
+            continue
+        frame.to_csv(fold_dir / f"{name}.csv", index=False)
+    write_json_manifest(
+        fold_dir / "done.json",
+        {
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "fold": int(fold_id),
+            "tables": table_rows,
+        },
+    )
+
+
+def _read_fold_checkpoint(fold_dir: Path) -> EvaluationResult:
+    tables = {}
+    for result_field in fields(EvaluationResult):
+        name = result_field.name
+        path = fold_dir / f"{name}.csv"
+        tables[name] = pd.read_csv(path) if path.exists() else pd.DataFrame()
+    return EvaluationResult(**tables)
+
+
+def _notify_progress(
+    progress_callback: ProgressCallback | None,
+    **payload: object,
+) -> None:
+    if progress_callback is not None:
+        progress_callback(payload)
+
+
 def write_provenance(
     *,
     project_root: Path | None = None,
@@ -312,6 +529,9 @@ def run_all_v2a_evaluations(
     project_root: Path | None = None,
     config_path: Path | None = None,
     output_root: Path | None = None,
+    resume: bool = False,
+    checkpoint_root: Path | None = None,
+    progress_callback: ProgressCallback | None = None,
 ) -> dict[str, dict[str, Path]]:
     project_root = (
         resolve_project_root() if project_root is None else Path(project_root)
@@ -330,6 +550,9 @@ def run_all_v2a_evaluations(
             project_root=project_root,
             config_path=config_path,
             output_root=output_root,
+            resume=resume,
+            checkpoint_root=checkpoint_root,
+            progress_callback=progress_callback,
         )
     write_recording_aggregate(
         completed,
@@ -805,7 +1028,26 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--provenance-only", action="store_true")
     parser.add_argument("--all-v2a", action="store_true")
     parser.add_argument("--modality", default="fluorescence")
+    parser.add_argument(
+        "--resume",
+        action="store_true",
+        help="Reuse completed strict-fold checkpoints when running an evaluation.",
+    )
+    parser.add_argument(
+        "--checkpoint-root",
+        type=Path,
+        help="Optional root directory for strict-fold checkpoints.",
+    )
     return parser
+
+
+def _stdout_progress(event: Mapping[str, object]) -> None:
+    label = str(event.get("event"))
+    fold = event.get("fold")
+    completed = int(event.get("completed", 0))
+    total = int(event.get("total", 0))
+    fold_label = "" if fold is None else f" fold={fold}"
+    print(f"{label}{fold_label} ({completed}/{total})", flush=True)
 
 
 def main() -> None:
@@ -831,6 +1073,9 @@ def main() -> None:
             project_root=project_root,
             config_path=args.config,
             output_root=args.output_root,
+            resume=args.resume,
+            checkpoint_root=args.checkpoint_root,
+            progress_callback=_stdout_progress if args.resume else None,
         )
         print(f"Completed {len(completed)} recordings.")
         return
@@ -844,6 +1089,9 @@ def main() -> None:
         project_root=project_root,
         config_path=args.config,
         output_root=args.output_root,
+        resume=args.resume,
+        checkpoint_root=args.checkpoint_root,
+        progress_callback=_stdout_progress if args.resume else None,
     )
     print(paths["run_manifest"])
 
