@@ -2,8 +2,9 @@
 
 Each adapter consumes traces shaped ``(n_neurons, T)`` and returns a
 :class:`GraphEstimate` with a weighted score matrix and a binary adjacency in
-the ``[source, target]`` convention. The c-GC family is loaded from the
-hardened :mod:`csl.core.causalised_gc` module (with a path-load fallback).
+the ``[source, target]`` convention. The simulation c-GC family uses the
+vectorized :class:`csl.core.new_causalised_GC.FastGcStar` implementation when
+available, with a fallback to the hardened :mod:`csl.core.causalised_gc` module.
 """
 
 from __future__ import annotations
@@ -45,6 +46,17 @@ def _load_fit_cgc():
         return module.fit_cgc
 
 
+def _load_fast_gcstar():
+    """Load the vectorized c-GC estimator, returning ``None`` if unavailable."""
+
+    try:
+        from csl.core.new_causalised_GC import FastGcStar
+
+        return FastGcStar
+    except Exception:  # pragma: no cover - fallback for exotic installs
+        return None
+
+
 @dataclass(frozen=True)
 class GraphEstimate:
     """A connectivity estimate in ``[source, target]`` orientation."""
@@ -74,35 +86,56 @@ def estimate_cgc(
     FDR-controlled binary graph.
     """
 
-    fit_cgc = _load_fit_cgc()
-    result = fit_cgc(
-        np.asarray(traces, dtype=float),
-        n_perm=n_perm,
-        n_pasts=n_pasts,
-        n_lags=n_lags,
-        method=method,
-        random_state=random_state,
-        alpha=alpha,
-        beta=beta,
-        include_contemporaneous=False,
-    )
+    data = np.asarray(traces, dtype=float)
+    fast_gcstar = _load_fast_gcstar()
+    if fast_gcstar is not None:
+        estimator = fast_gcstar(
+            n_perm=n_perm,
+            n_pasts=n_pasts,
+            n_lags=n_lags,
+            method=method,
+            random_state=random_state,
+        ).fit(data)
+        result = estimator.get_result(
+            alpha=alpha,
+            beta=beta,
+            include_contemporaneous=False,
+        )
+        fdr_result = estimator.get_result(
+            alpha=alpha,
+            beta=beta,
+            include_contemporaneous=False,
+            use_fdr=True,
+        )
+    else:
+        fit_cgc = _load_fit_cgc()
+        result = fit_cgc(
+            data,
+            n_perm=n_perm,
+            n_pasts=n_pasts,
+            n_lags=n_lags,
+            method=method,
+            random_state=random_state,
+            alpha=alpha,
+            beta=beta,
+            include_contemporaneous=False,
+        )
+        fdr_result = fit_cgc(
+            data,
+            n_perm=n_perm,
+            n_pasts=n_pasts,
+            n_lags=n_lags,
+            method=method,
+            random_state=random_state,
+            alpha=alpha,
+            beta=beta,
+            include_contemporaneous=False,
+            use_fdr=True,
+        )
     scores = np.asarray(result.lag_only, dtype=float)
     binary = (scores != 0).astype(int)
     np.fill_diagonal(binary, 0)
 
-    binary_fdr = None
-    fdr_result = fit_cgc(
-        np.asarray(traces, dtype=float),
-        n_perm=n_perm,
-        n_pasts=n_pasts,
-        n_lags=n_lags,
-        method=method,
-        random_state=random_state,
-        alpha=alpha,
-        beta=beta,
-        include_contemporaneous=False,
-        use_fdr=True,
-    )
     binary_fdr = (np.asarray(fdr_result.lag_only) != 0).astype(int)
     np.fill_diagonal(binary_fdr, 0)
 
