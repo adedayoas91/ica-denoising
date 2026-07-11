@@ -15,6 +15,7 @@ import numpy as np
 from scipy.signal import butter, lfilter
 from sklearn.decomposition import PCA, FastICA
 
+from ica_denoising.core.ica_utils import infomax_dec, reconstruct_bss
 from ica_denoising.variant_id import build_variant_id, cluster_keep_selection
 
 __all__ = ["VariantResult", "build_variants", "ORACLE_VARIANTS"]
@@ -64,6 +65,19 @@ def _explained_variance(original: np.ndarray, recon: np.ndarray) -> float:
     return float(max(0.0, 1.0 - residual / total))
 
 
+def _mask_sources_by_variance(
+    sources: np.ndarray, keep_top: Optional[int]
+) -> np.ndarray:
+    n_components = sources.shape[1]
+    if keep_top is None or keep_top >= n_components:
+        return sources
+    variances = np.var(sources, axis=0)
+    keep = np.argsort(variances)[::-1][:keep_top]
+    mask = np.zeros(n_components, dtype=bool)
+    mask[keep] = True
+    return sources * mask[None, :]
+
+
 def _ica_reconstruct(
     traces: np.ndarray,
     keep_top: Optional[int],
@@ -85,14 +99,30 @@ def _ica_reconstruct(
         max_iter=500,
     )
     sources = ica.fit_transform(x)  # (T, n_components)
-    if keep_top is not None and keep_top < n_components:
-        variances = np.var(sources, axis=0)
-        keep = np.argsort(variances)[::-1][:keep_top]
-        mask = np.zeros(n_components, dtype=bool)
-        mask[keep] = True
-        sources = sources * mask[None, :]
+    sources = _mask_sources_by_variance(sources, keep_top)
     recon = ica.inverse_transform(sources)
     return recon.T
+
+
+def _infomax_reconstruct(
+    traces: np.ndarray,
+    keep_top: Optional[int],
+    rng_seed: int,
+    *,
+    n_components: int | None = None,
+) -> np.ndarray:
+    """Infomax reconstruction using the project natural-gradient implementation."""
+
+    n_components = traces.shape[0] if n_components is None else int(n_components)
+    n_components = max(1, min(n_components, traces.shape[0], traces.shape[1]))
+    sources, _ic_ft, mixing, mean = infomax_dec(
+        traces,
+        n_comps=n_components,
+        max_iter=500,
+        random_state=rng_seed,
+    )
+    sources = _mask_sources_by_variance(sources, keep_top)
+    return reconstruct_bss(sources, mixing, mean).T
 
 
 def _pca_reconstruct(traces: np.ndarray, rank: int) -> np.ndarray:
@@ -195,7 +225,6 @@ def build_variants(
     add("raw", raw, False)
     add("artifact_oracle", raw - _impute(artifact), True)
 
-    fun_map = {"fastica": "logcosh", "infomax": "exp"}
     for method in methods:
         method = method.lower()
         if method == "pca":
@@ -207,12 +236,31 @@ def build_variants(
             )
             for seed in random_states:
                 seed = int(seed)
-                if method in fun_map:
+                if method == "fastica":
                     recon = _ica_reconstruct(
                         raw,
                         keep_top,
                         seed,
-                        fun_map[method],
+                        "logcosh",
+                        n_components=rank,
+                    )
+                    add(
+                        build_variant_id(
+                            method=method,
+                            selection=rank_token,
+                            rank=rank,
+                            seed=seed,
+                        ),
+                        recon,
+                        False,
+                        rank_mode=rank_mode,
+                        seed=seed,
+                    )
+                elif method == "infomax":
+                    recon = _infomax_reconstruct(
+                        raw,
+                        keep_top,
+                        seed,
                         n_components=rank,
                     )
                     add(
