@@ -114,6 +114,7 @@ class EstimatorConfig:
     n_perm: int = 200
     alpha: float = 0.01
     beta: float = 0.001
+    pcmci_alpha: float = 0.05
     correction: str = "fdr"  # fdr | none
     estimator_seed: int = 0
     var_orders: tuple[int, ...] = (1, 2, 3)

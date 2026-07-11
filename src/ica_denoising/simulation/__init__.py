@@ -4,7 +4,11 @@ from __future__ import annotations
 
 from .config import SimulationConfig, load_config
 from .dataset import SimulatedDataset, build_dataset, default_scenarios
-from .runner import run_benchmark, run_replicate
+from .runner import (
+    import_completed_replicates_from_benchmark,
+    run_benchmark,
+    run_replicate,
+)
 
 __all__ = [
     "SimulationConfig",
@@ -12,6 +16,7 @@ __all__ = [
     "SimulatedDataset",
     "build_dataset",
     "default_scenarios",
+    "import_completed_replicates_from_benchmark",
     "run_benchmark",
     "run_replicate",
 ]

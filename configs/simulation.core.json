@@ -1,9 +1,9 @@
 {
-  "benchmark_version": "core",
+  "benchmark_version": "core_1000",
   "schema_version": "1",
   "seeds": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29],
   "sample_rate_hz": 5.0,
-  "n_frames": 2000,
+  "n_frames": 1000,
   "graph": {
     "family": "sparse_random",
     "n_observed": 10,
@@ -25,12 +25,13 @@
     "keep_top": 4
   },
   "estimator": {
-    "estimators": ["cgc", "cgc_star", "var"],
+    "estimators": ["cgc", "cgc_star", "pcmci", "jpcmciplus", "var"],
     "n_pasts": 2,
     "n_lags": 2,
     "n_perm": 200,
     "alpha": 0.01,
     "beta": 0.001,
+    "pcmci_alpha": 0.05,
     "correction": "fdr",
     "var_orders": [1, 2, 3],
     "run_pcmci": true

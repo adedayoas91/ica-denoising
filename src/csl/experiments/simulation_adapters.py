@@ -13,7 +13,14 @@ from typing import Optional
 
 import numpy as np
 
-__all__ = ["GraphEstimate", "estimate_cgc", "estimate_var", "estimate_pcmci", "ESTIMATORS"]
+__all__ = [
+    "GraphEstimate",
+    "estimate_cgc",
+    "estimate_var",
+    "estimate_pcmci",
+    "estimate_jpcmciplus",
+    "ESTIMATORS",
+]
 
 
 def _load_fit_cgc():
@@ -191,9 +198,58 @@ def estimate_pcmci(
     )
 
 
+def estimate_jpcmciplus(
+    traces: np.ndarray,
+    *,
+    tau_max: int = 2,
+    alpha: float = 0.05,
+) -> GraphEstimate:
+    """JPCMCI+ estimator via Tigramite with all observed nodes as system nodes."""
+
+    from tigramite import data_processing as pp
+    from tigramite.independence_tests.parcorr_mult import ParCorrMult
+    from tigramite.jpcmciplus import JPCMCIplus
+
+    x = np.asarray(traces, dtype=float).T
+    dataframe = pp.DataFrame(x)
+    node_classification = {i: "system" for i in range(x.shape[1])}
+    jpcmciplus = JPCMCIplus(
+        dataframe=dataframe,
+        cond_ind_test=ParCorrMult(significance="analytic"),
+        node_classification=node_classification,
+        verbosity=0,
+    )
+    results = jpcmciplus.run_jpcmciplus(
+        tau_min=0,
+        tau_max=tau_max,
+        pc_alpha=alpha,
+    )
+    graph = results["graph"]
+    d = x.shape[1]
+    scores = np.zeros((d, d))
+    binary = np.zeros((d, d), dtype=int)
+    val = results.get("val_matrix")
+    for i in range(d):
+        for j in range(d):
+            for lag in range(1, graph.shape[2]):
+                if graph[i, j, lag] in ("-->", "o->"):
+                    binary[i, j] = 1
+                    if val is not None:
+                        scores[i, j] = max(scores[i, j], abs(val[i, j, lag]))
+    np.fill_diagonal(binary, 0)
+    return GraphEstimate(
+        estimator="jpcmciplus",
+        scores=scores,
+        binary=binary,
+        binary_fdr=None,
+        warnings=(),
+    )
+
+
 ESTIMATORS = {
     "cgc": lambda tr, **kw: estimate_cgc(tr, method="cgc", **kw),
     "cgc_star": lambda tr, **kw: estimate_cgc(tr, method="fcgc", **kw),
     "var": estimate_var,
     "pcmci": estimate_pcmci,
+    "jpcmciplus": estimate_jpcmciplus,
 }

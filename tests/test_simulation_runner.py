@@ -5,7 +5,7 @@ import json
 import numpy as np
 import pandas as pd
 
-from csl.experiments.simulation_adapters import GraphEstimate
+from csl.experiments.simulation_adapters import GraphEstimate, estimate_jpcmciplus
 from ica_denoising.simulation.config import (
     ArtifactConfig,
     CalciumConfig,
@@ -16,6 +16,7 @@ from ica_denoising.simulation.config import (
 from ica_denoising.simulation.dataset import build_dataset
 from ica_denoising.simulation.runner import (
     _select_scored_graph,
+    import_completed_replicates_from_benchmark,
     replicate_dir,
     run_benchmark,
 )
@@ -58,6 +59,109 @@ def test_dry_run_plans_only(tmp_path):
         assert not (path / "manifest.json").exists()
 
 
+def test_import_completed_replicate_filters_to_target_method(tmp_path):
+    source_root = tmp_path / "source" / "core"
+    source_dir = source_root / "S0" / "seed_0"
+    source_dir.mkdir(parents=True)
+    np.savez_compressed(source_dir / "dataset.npz", corrupted=np.zeros((2, 5)))
+    variant_ids = [
+        "clean",
+        "raw",
+        "artifact_oracle",
+        "fastica/cluster_keep_top_03_full/rank_2/seed_0",
+        "infomax/cluster_keep_top_03_full/rank_2/seed_0",
+        "sobi/cluster_keep_top_03_lags_1_2_3_5_full/rank_2/seed_0",
+        "jade_fastica_fallback/cluster_keep_top_03_full/rank_2/seed_0",
+        "pca/rank_matched_full/rank_2/seed_0",
+        "random_subspace/rank_matched_full/rank_2/seed_0",
+        "fastica/all/rank_2/seed_0",
+        "causal_lowpass/cutoff_1.25hz/rank_2/seed_0",
+        "oracle_selection",
+    ]
+    pd.DataFrame(
+        {
+            "variant_id": variant_ids,
+            "trace_hash": [f"hash_{idx}" for idx, _ in enumerate(variant_ids)],
+        }
+    ).to_csv(source_dir / "variants.csv", index=False)
+    for csv_name in ("trace_metrics", "behavior_metrics", "state_metrics"):
+        pd.DataFrame(
+            {
+                "variant_id": variant_ids,
+                "trace_hash": [f"hash_{idx}" for idx, _ in enumerate(variant_ids)],
+                "value": np.arange(len(variant_ids)),
+            }
+        ).to_csv(source_dir / f"{csv_name}.csv", index=False)
+    graph_rows = []
+    for variant_id in variant_ids:
+        graph_rows.append(
+            {
+                "variant_id": variant_id,
+                "estimator": "cgc",
+                "trace_hash": "hash",
+                "f1": 0.0,
+            }
+        )
+        graph_path = source_dir / "graphs" / "cgc" / f"{variant_id.replace('/', '__')}.npz"
+        graph_path.parent.mkdir(parents=True, exist_ok=True)
+        np.savez_compressed(
+            graph_path,
+            scores=np.zeros((2, 2)),
+            binary=np.zeros((2, 2), dtype=int),
+            scored_binary=np.zeros((2, 2), dtype=int),
+        )
+    pd.DataFrame(graph_rows).to_csv(source_dir / "graph_metrics.csv", index=False)
+    pd.DataFrame().to_csv(source_dir / "failures.csv", index=False)
+    cfg = SimulationConfig.from_dict(
+        {
+            **_smoke_cfg(tmp_path).to_dict(),
+            "benchmark_version": "core_sobi",
+            "seeds": [0],
+            "bss": {"methods": ["sobi"], "keep_top": 3},
+            "run": {"output_dir": str(tmp_path / "target"), "resume": True},
+        }
+    )
+    manifest = {
+        "benchmark_version": "core",
+        "schema_version": cfg.schema_version,
+        "scenario_id": "S0",
+        "seed": 0,
+        "resolved_config": _smoke_cfg(tmp_path).to_dict(),
+        "git_revision": "test",
+        "versions": {},
+        "dataset_hash": "hash",
+        "achieved_asr": 0.0,
+        "start": "2026-01-01T00:00:00+00:00",
+        "end": "2026-01-01T00:00:00+00:00",
+        "runtime_seconds": 1.0,
+        "n_variants": len(variant_ids),
+        "failures": [],
+        "complete": True,
+    }
+    (source_dir / "manifest.json").write_text(json.dumps(manifest))
+
+    report = import_completed_replicates_from_benchmark(
+        source_root,
+        cfg,
+        scenarios=["S0"],
+        seeds=[0],
+    )
+
+    assert report["imported"] == 1
+    target_dir = replicate_dir(cfg, "S0", 0)
+    copied_variants = set(pd.read_csv(target_dir / "variants.csv")["variant_id"])
+    assert "sobi/cluster_keep_top_03_lags_1_2_3_5_full/rank_2/seed_0" in copied_variants
+    assert "fastica/cluster_keep_top_03_full/rank_2/seed_0" not in copied_variants
+    assert "infomax/cluster_keep_top_03_full/rank_2/seed_0" not in copied_variants
+    assert "jade_fastica_fallback/cluster_keep_top_03_full/rank_2/seed_0" not in copied_variants
+    assert "raw" in copied_variants
+    assert "fastica/all/rank_2/seed_0" in copied_variants
+    target_manifest = json.loads((target_dir / "manifest.json").read_text())
+    assert target_manifest["benchmark_version"] == "core_sobi"
+    assert target_manifest["complete"] is True
+    assert (target_dir / "graphs" / "cgc" / "raw.npz").exists()
+
+
 def test_smoke_run_end_to_end(tmp_path):
     cfg = _smoke_cfg(tmp_path)
     paths = run_benchmark(cfg)
@@ -88,6 +192,60 @@ def test_resume_skips_completed(tmp_path):
     # second run with resume should not rewrite the manifest
     run_benchmark(cfg, resume=True)
     assert manifest.stat().st_mtime_ns == first_mtime
+
+
+def test_resume_extends_missing_estimator_outputs(tmp_path, monkeypatch):
+    from ica_denoising.simulation import runner
+
+    cfg = SimulationConfig.from_dict(
+        {
+            **_smoke_cfg(tmp_path).to_dict(),
+            "seeds": [0],
+            "n_frames": 120,
+            "estimator": {
+                **_smoke_cfg(tmp_path).to_dict()["estimator"],
+                "estimators": ["var"],
+            },
+        }
+    )
+    run_benchmark(cfg)
+    out_dir = replicate_dir(cfg, "S0", 0)
+    graph_before = pd.read_csv(out_dir / "graph_metrics.csv")
+    assert set(graph_before["estimator"]) == {"var"}
+
+    def _new_estimator(traces):
+        n = traces.shape[0]
+        scores = np.zeros((n, n), dtype=float)
+        if n > 1:
+            scores[0, 1] = 1.0
+        binary = (scores != 0).astype(int)
+        return GraphEstimate(
+            estimator="new_estimator",
+            scores=scores,
+            binary=binary,
+            binary_fdr=None,
+            warnings=(),
+        )
+
+    monkeypatch.setitem(runner.ESTIMATORS, "new_estimator", _new_estimator)
+    extended_cfg = SimulationConfig.from_dict(
+        {
+            **cfg.to_dict(),
+            "estimator": {
+                **cfg.to_dict()["estimator"],
+                "estimators": ["var", "new_estimator"],
+            },
+        }
+    )
+
+    run_benchmark(extended_cfg, resume=True)
+
+    graph_after = pd.read_csv(out_dir / "graph_metrics.csv")
+    assert {"var", "new_estimator"} == set(graph_after["estimator"])
+    manifest = json.loads((out_dir / "manifest.json").read_text())
+    assert manifest["complete"] is True
+    assert "new_estimator" in manifest["resolved_config"]["estimator"]["estimators"]
+    assert (out_dir / "graphs" / "new_estimator" / "raw.npz").exists()
 
 
 def test_reporting_regenerates_from_csv(tmp_path):
@@ -130,6 +288,16 @@ def test_fdr_correction_selects_fdr_binary_graph():
     assert correction == "fdr"
     assert scored[0, 1] == 0
     assert scored[1, 0] == 1
+
+
+def test_jpcmciplus_adapter_runs_on_small_trace_matrix():
+    traces = np.random.default_rng(0).normal(size=(4, 80))
+
+    estimate = estimate_jpcmciplus(traces, tau_max=2, alpha=0.05)
+
+    assert estimate.estimator == "jpcmciplus"
+    assert estimate.binary.shape == (4, 4)
+    assert estimate.scores.shape == (4, 4)
 
 
 def test_failed_estimator_marks_manifest_incomplete(tmp_path, monkeypatch):
