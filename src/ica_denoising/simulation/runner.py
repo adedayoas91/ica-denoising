@@ -31,6 +31,7 @@ from .variants import build_variants
 logger = logging.getLogger(__name__)
 
 ProgressCallback = Callable[[Mapping[str, object]], None]
+_CORE_BSS_VARIANT_IMPLEMENTATION_VERSION = "core_bss_method_specific_controls_v2"
 
 __all__ = [
     "import_completed_replicates_from_benchmark",
@@ -176,6 +177,20 @@ def _build_variants_for_dataset(cfg: SimulationConfig, dataset: SimulatedDataset
     )
 
 
+def _variant_implementation_version(cfg: SimulationConfig) -> str:
+    return _CORE_BSS_VARIANT_IMPLEMENTATION_VERSION
+
+
+def _manifest_variant_implementation_current(
+    manifest: Mapping[str, object],
+    cfg: SimulationConfig,
+) -> bool:
+    expected = _variant_implementation_version(cfg)
+    if not expected:
+        return True
+    return manifest.get("variant_implementation_version") == expected
+
+
 def _select_scored_graph(est, correction: str) -> tuple[np.ndarray, str]:
     correction = str(correction).lower()
     if correction == "none":
@@ -314,6 +329,7 @@ def run_replicate(
         "resolved_config": cfg.to_dict(),
         "git_revision": _git_revision(),
         "versions": _package_versions(),
+        "variant_implementation_version": _variant_implementation_version(cfg),
         "dataset_hash": _hash_array(dataset.corrupted),
         "achieved_asr": dataset.achieved_asr,
         "start": started.isoformat(),
@@ -358,6 +374,8 @@ def _replicate_outputs_complete_for_config(
     if variants.empty or graph_metrics.empty:
         return False
     variant_ids = set(variants["variant_id"].astype(str))
+    if not _variant_ids_belong_to_config(variant_ids, cfg):
+        return False
     expected = {
         (estimator, variant_id)
         for estimator in _estimator_list(cfg)
@@ -383,7 +401,10 @@ def _replicate_complete_for_config(
 ) -> bool:
     manifest = out_dir / "manifest.json"
     try:
-        if not bool(json.loads(manifest.read_text()).get("complete")):
+        manifest_data = json.loads(manifest.read_text())
+        if not bool(manifest_data.get("complete")):
+            return False
+        if not _manifest_variant_implementation_current(manifest_data, cfg):
             return False
     except (FileNotFoundError, json.JSONDecodeError):
         return False
@@ -462,6 +483,12 @@ def _extend_replicate_graphs(
     started = datetime.now(timezone.utc)
     out_dir = replicate_dir(cfg, scenario.scenario_id, seed)
     if not (out_dir / "dataset.npz").exists():
+        return run_replicate(cfg, scenario, seed)
+    try:
+        manifest_data = json.loads((out_dir / "manifest.json").read_text())
+    except (FileNotFoundError, json.JSONDecodeError):
+        manifest_data = {}
+    if not _manifest_variant_implementation_current(manifest_data, cfg):
         return run_replicate(cfg, scenario, seed)
 
     dataset = SimulatedDataset.load(out_dir / "dataset.npz")
@@ -579,6 +606,7 @@ def _extend_replicate_graphs(
             "resolved_config": cfg.to_dict(),
             "git_revision": _git_revision(),
             "versions": _package_versions(),
+            "variant_implementation_version": _variant_implementation_version(cfg),
             "dataset_hash": _hash_array(dataset.corrupted),
             "achieved_asr": dataset.achieved_asr,
             "end": ended.isoformat(),
@@ -786,6 +814,12 @@ def _import_replicate_subset(
     target_dir: Path,
     target_cfg: SimulationConfig,
 ) -> None:
+    source_manifest = json.loads((source_dir / "manifest.json").read_text())
+    if not _manifest_variant_implementation_current(source_manifest, target_cfg):
+        raise ValueError(
+            f"{source_dir}: source variants were produced by an older BSS implementation."
+        )
+
     target_dir.mkdir(parents=True, exist_ok=True)
     (target_dir / "graphs").mkdir(exist_ok=True)
     shutil.copy2(source_dir / "dataset.npz", target_dir / "dataset.npz")
@@ -805,6 +839,13 @@ def _import_replicate_subset(
     if not selected_ids:
         raise ValueError(
             f"{source_dir}: no variants matched methods {target_cfg.bss.methods!r}."
+        )
+    missing_methods = _missing_method_specific_variants(
+        selected_ids, target_cfg.bss.methods
+    )
+    if missing_methods:
+        raise ValueError(
+            f"{source_dir}: missing method-specific variants for {missing_methods!r}."
         )
 
     for csv_name in (
@@ -838,12 +879,12 @@ def _import_replicate_subset(
         target_graph.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(source_graph, target_graph)
 
-    source_manifest = json.loads((source_dir / "manifest.json").read_text())
     now = datetime.now(timezone.utc).isoformat()
     manifest = {
         **source_manifest,
         "benchmark_version": target_cfg.benchmark_version,
         "resolved_config": target_cfg.to_dict(),
+        "variant_implementation_version": _variant_implementation_version(target_cfg),
         "start": now,
         "end": now,
         "runtime_seconds": 0.0,
@@ -864,15 +905,35 @@ def _variant_belongs_to_methods(
         return True
     if variant_id.startswith(("pca/", "random_subspace/", "causal_lowpass/")):
         return True
-    if variant_id.startswith("fastica/all/"):
-        return True
     for method in methods:
         method = str(method).lower()
-        if method == "jade" and variant_id.startswith("jade_fastica_fallback/"):
-            return True
         if variant_id.startswith(f"{method}/"):
             return True
     return False
+
+
+def _variant_ids_belong_to_config(
+    variant_ids: set[str],
+    cfg: SimulationConfig,
+) -> bool:
+    return all(
+        _variant_belongs_to_methods(variant_id, cfg.bss.methods)
+        for variant_id in variant_ids
+    ) and not _missing_method_specific_variants(variant_ids, cfg.bss.methods)
+
+
+def _missing_method_specific_variants(
+    variant_ids: set[str],
+    methods: tuple[str, ...],
+) -> list[str]:
+    missing = []
+    for method in methods:
+        method = str(method).lower()
+        if method == "pca":
+            continue
+        if not any(variant_id.startswith(f"{method}/") for variant_id in variant_ids):
+            missing.append(method)
+    return missing
 
 
 def _read_csv_or_empty(path: Path) -> pd.DataFrame:

@@ -130,7 +130,11 @@ def test_infomax_variant_uses_infomax_dec(monkeypatch):
 
     monkeypatch.setattr(variant_mod, "infomax_dec", fake_infomax_dec)
     monkeypatch.setattr(variant_mod, "_ica_reconstruct", fake_ica_reconstruct)
-    monkeypatch.setattr(variant_mod, "_oracle_select", lambda traces, _artifact, _seed: traces.copy())
+    monkeypatch.setattr(
+        variant_mod,
+        "_oracle_select",
+        lambda traces, _artifact, _seed, **_kwargs: traces.copy(),
+    )
 
     variants = build_variants(
         clean=clean,
@@ -147,6 +151,7 @@ def test_infomax_variant_uses_infomax_dec(monkeypatch):
 
     ids = {variant.variant_id for variant in variants}
     assert "infomax/cluster_keep_top_02_rank3/rank_3/seed_7" in ids
+    assert "fastica/all/rank_4/seed_7" not in ids
     assert calls["infomax"] == [
         {
             "shape": corrupted.shape,
@@ -156,6 +161,147 @@ def test_infomax_variant_uses_infomax_dec(monkeypatch):
         }
     ]
     assert "exp" not in calls["fastica_fun"]
+
+
+def test_sobi_variant_uses_sobi_dec(monkeypatch):
+    from ica_denoising.simulation import variants as variant_mod
+
+    rng = np.random.default_rng(46)
+    clean = rng.normal(0.0, 1.0, size=(4, 80))
+    corrupted = clean + 0.05 * rng.normal(size=clean.shape)
+    artifact = corrupted - clean
+    calls = {"sobi": [], "fastica_fun": []}
+
+    def fake_sobi_dec(data, n_comps, lags, max_iter, **_kwargs):
+        calls["sobi"].append(
+            {
+                "shape": data.shape,
+                "n_comps": n_comps,
+                "lags": tuple(lags),
+                "max_iter": max_iter,
+            }
+        )
+        time = np.linspace(0.0, 2.0 * np.pi, data.shape[1])
+        sources = np.column_stack(
+            [np.sin((idx + 1) * time) for idx in range(n_comps)]
+        )
+        mixing = np.eye(data.shape[0], n_comps)
+        mean = np.zeros(data.shape[0])
+        return sources, np.empty((n_comps, data.shape[1])), mixing, mean
+
+    def fake_ica_reconstruct(traces, keep_top, rng_seed, fun, *, n_components=None):
+        calls["fastica_fun"].append(fun)
+        return traces.copy()
+
+    def fail_fastica(*_args, **_kwargs):
+        raise AssertionError("SOBI-only variants should not instantiate FastICA")
+
+    monkeypatch.setattr(variant_mod, "sobi_dec", fake_sobi_dec)
+    monkeypatch.setattr(variant_mod, "_ica_reconstruct", fake_ica_reconstruct)
+    monkeypatch.setattr(variant_mod, "FastICA", fail_fastica)
+
+    variants = build_variants(
+        clean=clean,
+        corrupted=corrupted,
+        artifact=artifact,
+        methods=("sobi",),
+        keep_top=2,
+        rank_target=3,
+        random_state=7,
+        sample_rate_hz=5.0,
+        rank_targets=(("rank3", 3),),
+        random_states=(7,),
+        sobi_lag_sets=((1, 3),),
+    )
+
+    ids = {variant.variant_id for variant in variants}
+    assert "sobi/cluster_keep_top_02_lags_1_3_rank3/rank_3/seed_7" in ids
+    assert "fastica/all/rank_4/seed_7" not in ids
+    assert calls["fastica_fun"] == []
+    assert calls["sobi"] == [
+        {
+            "shape": corrupted.shape,
+            "n_comps": 3,
+            "lags": (1, 3),
+            "max_iter": 500,
+        },
+        {
+            "shape": corrupted.shape,
+            "n_comps": 4,
+            "lags": (1, 3),
+            "max_iter": 500,
+        },
+    ]
+
+
+def test_jade_variant_uses_jade_dec_not_fastica_fallback(monkeypatch):
+    from ica_denoising.simulation import variants as variant_mod
+
+    rng = np.random.default_rng(47)
+    clean = rng.normal(0.0, 1.0, size=(4, 80))
+    corrupted = clean + 0.05 * rng.normal(size=clean.shape)
+    artifact = corrupted - clean
+    calls = {"jade": [], "fastica_fun": []}
+
+    def fake_jade_dec(data, n_comps, max_iter, **_kwargs):
+        calls["jade"].append(
+            {
+                "shape": data.shape,
+                "n_comps": n_comps,
+                "max_iter": max_iter,
+            }
+        )
+        time = np.linspace(0.0, 2.0 * np.pi, data.shape[1])
+        sources = np.column_stack(
+            [np.sin((idx + 1) * time) for idx in range(n_comps)]
+        )
+        mixing = np.eye(data.shape[0], n_comps)
+        mean = np.zeros(data.shape[0])
+        return sources, np.empty((n_comps, data.shape[1])), mixing, mean
+
+    def fake_ica_reconstruct(traces, keep_top, rng_seed, fun, *, n_components=None):
+        calls["fastica_fun"].append(fun)
+        return traces.copy()
+
+    def fail_fastica(*_args, **_kwargs):
+        raise AssertionError("JADE-only variants should not instantiate FastICA")
+
+    monkeypatch.setattr(variant_mod, "jade_dec", fake_jade_dec)
+    monkeypatch.setattr(variant_mod, "_ica_reconstruct", fake_ica_reconstruct)
+    monkeypatch.setattr(variant_mod, "FastICA", fail_fastica)
+
+    variants = build_variants(
+        clean=clean,
+        corrupted=corrupted,
+        artifact=artifact,
+        methods=("jade",),
+        keep_top=2,
+        rank_target=3,
+        random_state=7,
+        sample_rate_hz=5.0,
+        rank_targets=(("rank3", 3),),
+        random_states=(7,),
+    )
+
+    ids = {variant.variant_id for variant in variants}
+    assert "jade/cluster_keep_top_02_rank3/rank_3/seed_7" in ids
+    assert "fastica/all/rank_4/seed_7" not in ids
+    assert not any(
+        variant_id.startswith("jade_fastica_fallback/") for variant_id in ids
+    )
+    assert calls["jade"] == [
+        {
+            "shape": corrupted.shape,
+            "n_comps": 3,
+            "max_iter": 500,
+        },
+        {
+            "shape": corrupted.shape,
+            "n_comps": 4,
+            "max_iter": 500,
+        },
+    ]
+    assert calls["fastica_fun"] == []
 
 
 def test_artifact_oracle_recovers_clean():

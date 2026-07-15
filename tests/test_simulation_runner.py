@@ -71,7 +71,7 @@ def test_import_completed_replicate_filters_to_target_method(tmp_path):
         "fastica/cluster_keep_top_03_full/rank_2/seed_0",
         "infomax/cluster_keep_top_03_full/rank_2/seed_0",
         "sobi/cluster_keep_top_03_lags_1_2_3_5_full/rank_2/seed_0",
-        "jade_fastica_fallback/cluster_keep_top_03_full/rank_2/seed_0",
+        "jade/cluster_keep_top_03_full/rank_2/seed_0",
         "pca/rank_matched_full/rank_2/seed_0",
         "random_subspace/rank_matched_full/rank_2/seed_0",
         "fastica/all/rank_2/seed_0",
@@ -134,6 +134,7 @@ def test_import_completed_replicate_filters_to_target_method(tmp_path):
         "start": "2026-01-01T00:00:00+00:00",
         "end": "2026-01-01T00:00:00+00:00",
         "runtime_seconds": 1.0,
+        "variant_implementation_version": "core_bss_method_specific_controls_v2",
         "n_variants": len(variant_ids),
         "failures": [],
         "complete": True,
@@ -153,9 +154,9 @@ def test_import_completed_replicate_filters_to_target_method(tmp_path):
     assert "sobi/cluster_keep_top_03_lags_1_2_3_5_full/rank_2/seed_0" in copied_variants
     assert "fastica/cluster_keep_top_03_full/rank_2/seed_0" not in copied_variants
     assert "infomax/cluster_keep_top_03_full/rank_2/seed_0" not in copied_variants
-    assert "jade_fastica_fallback/cluster_keep_top_03_full/rank_2/seed_0" not in copied_variants
+    assert "jade/cluster_keep_top_03_full/rank_2/seed_0" not in copied_variants
     assert "raw" in copied_variants
-    assert "fastica/all/rank_2/seed_0" in copied_variants
+    assert "fastica/all/rank_2/seed_0" not in copied_variants
     target_manifest = json.loads((target_dir / "manifest.json").read_text())
     assert target_manifest["benchmark_version"] == "core_sobi"
     assert target_manifest["complete"] is True
