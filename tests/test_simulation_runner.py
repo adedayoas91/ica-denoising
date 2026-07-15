@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
 
 import numpy as np
 import pandas as pd
+import pytest
 
 from csl.experiments.simulation_adapters import GraphEstimate, estimate_jpcmciplus
 from ica_denoising.simulation.config import (
@@ -15,6 +17,7 @@ from ica_denoising.simulation.config import (
 )
 from ica_denoising.simulation.dataset import build_dataset
 from ica_denoising.simulation.runner import (
+    _assert_no_unrequested_bss_variants,
     _select_scored_graph,
     import_completed_replicates_from_benchmark,
     replicate_dir,
@@ -161,6 +164,17 @@ def test_import_completed_replicate_filters_to_target_method(tmp_path):
     assert target_manifest["benchmark_version"] == "core_sobi"
     assert target_manifest["complete"] is True
     assert (target_dir / "graphs" / "cgc" / "raw.npz").exists()
+
+
+def test_method_split_guard_rejects_unrequested_fastica_variant():
+    variants = [
+        SimpleNamespace(variant_id="clean"),
+        SimpleNamespace(variant_id="infomax/cluster_keep_top_03_full/rank_2/seed_0"),
+        SimpleNamespace(variant_id="fastica/all/rank_2/seed_0"),
+    ]
+
+    with pytest.raises(RuntimeError, match="unrequested BSS variants"):
+        _assert_no_unrequested_bss_variants(variants, ("infomax",))
 
 
 def test_smoke_run_end_to_end(tmp_path):

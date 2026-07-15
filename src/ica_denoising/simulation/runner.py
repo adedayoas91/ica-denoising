@@ -161,7 +161,7 @@ def _build_variants_for_dataset(cfg: SimulationConfig, dataset: SimulatedDataset
 
     rank_target = max(2, int(0.8 * dataset.clean_fluorescence.shape[0]))
     bss_random_states = cfg.bss.random_states or (cfg.seed,)
-    return build_variants(
+    variants = build_variants(
         clean=dataset.clean_fluorescence,
         corrupted=dataset.corrupted,
         artifact=dataset.artifact,
@@ -175,6 +175,24 @@ def _build_variants_for_dataset(cfg: SimulationConfig, dataset: SimulatedDataset
         random_states=bss_random_states,
         sobi_lag_sets=cfg.bss.sobi_lag_sets,
     )
+    _assert_no_unrequested_bss_variants(variants, cfg.bss.methods)
+    return variants
+
+
+def _assert_no_unrequested_bss_variants(variants, methods: tuple[str, ...]) -> None:
+    requested = {str(method).lower() for method in methods}
+    bss_methods = {"fastica", "infomax", "sobi", "jade"}
+    unexpected = sorted(
+        variant.variant_id
+        for variant in variants
+        for method in bss_methods - requested
+        if variant.variant_id.startswith(f"{method}/")
+    )
+    if unexpected:
+        raise RuntimeError(
+            "Method-specific benchmark produced unrequested BSS variants: "
+            f"{unexpected[:10]}"
+        )
 
 
 def _variant_implementation_version(cfg: SimulationConfig) -> str:
