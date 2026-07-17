@@ -206,7 +206,19 @@ def _manifest_variant_implementation_current(
     expected = _variant_implementation_version(cfg)
     if not expected:
         return True
-    return manifest.get("variant_implementation_version") == expected
+    actual = manifest.get("variant_implementation_version")
+    if actual == expected:
+        return True
+    return actual is None and _legacy_fastica_manifest_compatible(cfg)
+
+
+def _legacy_fastica_manifest_compatible(cfg: SimulationConfig) -> bool:
+    requested_bss = {
+        str(method).lower()
+        for method in cfg.bss.methods
+        if str(method).lower() != "pca"
+    }
+    return requested_bss == {"fastica"}
 
 
 def _select_scored_graph(est, correction: str) -> tuple[np.ndarray, str]:

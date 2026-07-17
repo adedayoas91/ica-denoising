@@ -18,6 +18,7 @@ from ica_denoising.simulation.config import (
 from ica_denoising.simulation.dataset import build_dataset
 from ica_denoising.simulation.runner import (
     _assert_no_unrequested_bss_variants,
+    _manifest_variant_implementation_current,
     _select_scored_graph,
     import_completed_replicates_from_benchmark,
     replicate_dir,
@@ -175,6 +176,28 @@ def test_method_split_guard_rejects_unrequested_fastica_variant():
 
     with pytest.raises(RuntimeError, match="unrequested BSS variants"):
         _assert_no_unrequested_bss_variants(variants, ("infomax",))
+
+
+def test_legacy_fastica_manifest_without_version_can_resume(tmp_path):
+    cfg = SimulationConfig.from_dict(
+        {
+            **_smoke_cfg(tmp_path).to_dict(),
+            "bss": {"methods": ["fastica"], "keep_top": 3},
+        }
+    )
+
+    assert _manifest_variant_implementation_current({"complete": True}, cfg)
+
+
+def test_legacy_nonfastica_manifest_without_version_is_stale(tmp_path):
+    cfg = SimulationConfig.from_dict(
+        {
+            **_smoke_cfg(tmp_path).to_dict(),
+            "bss": {"methods": ["infomax"], "keep_top": 3},
+        }
+    )
+
+    assert not _manifest_variant_implementation_current({"complete": True}, cfg)
 
 
 def test_smoke_run_end_to_end(tmp_path):
