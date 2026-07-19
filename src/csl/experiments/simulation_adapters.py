@@ -2,9 +2,9 @@
 
 Each adapter consumes traces shaped ``(n_neurons, T)`` and returns a
 :class:`GraphEstimate` with a weighted score matrix and a binary adjacency in
-the ``[source, target]`` convention. The simulation c-GC family uses the
-vectorized :class:`csl.core.new_causalised_GC.FastGcStar` implementation when
-available, with a fallback to the hardened :mod:`csl.core.causalised_gc` module.
+the ``[source, target]`` convention. The simulation c-GC family can use either
+the vectorized :class:`csl.core.new_causalised_GC.FastGcStar` implementation or
+the normal hardened :mod:`csl.core.causalised_gc` module.
 """
 
 from __future__ import annotations
@@ -72,22 +72,28 @@ def estimate_cgc(
     traces: np.ndarray,
     *,
     method: str = "cgc",
+    backend: str = "fast",
     n_pasts: int = 2,
     n_lags: int = 2,
     n_perm: int = 200,
     alpha: float = 0.01,
     beta: float = 0.001,
+    compute_fdr: bool = False,
     random_state: int = 0,
 ) -> GraphEstimate:
     """Run the c-GC (``method='cgc'``) or c-GC* (``method='fcgc'``) estimator.
 
     Contemporaneous edges are excluded from the primary graph; the collapsed
-    lag-only matrix is returned as the score, with corrected p-values and an
-    FDR-controlled binary graph.
+    lag-only matrix is returned as the score. Set ``compute_fdr=True`` only for
+    legacy benchmark outputs that explicitly request FDR-scored graphs.
     """
 
     data = np.asarray(traces, dtype=float)
-    fast_gcstar = _load_fast_gcstar()
+    backend = str(backend).lower()
+    if backend not in {"fast", "normal"}:
+        raise ValueError("backend must be 'fast' or 'normal'.")
+
+    fast_gcstar = _load_fast_gcstar() if backend == "fast" else None
     if fast_gcstar is not None:
         estimator = fast_gcstar(
             n_perm=n_perm,
@@ -101,12 +107,14 @@ def estimate_cgc(
             beta=beta,
             include_contemporaneous=False,
         )
-        fdr_result = estimator.get_result(
-            alpha=alpha,
-            beta=beta,
-            include_contemporaneous=False,
-            use_fdr=True,
-        )
+        fdr_result = None
+        if compute_fdr:
+            fdr_result = estimator.get_result(
+                alpha=alpha,
+                beta=beta,
+                include_contemporaneous=False,
+                use_fdr=True,
+            )
     else:
         fit_cgc = _load_fit_cgc()
         result = fit_cgc(
@@ -120,24 +128,28 @@ def estimate_cgc(
             beta=beta,
             include_contemporaneous=False,
         )
-        fdr_result = fit_cgc(
-            data,
-            n_perm=n_perm,
-            n_pasts=n_pasts,
-            n_lags=n_lags,
-            method=method,
-            random_state=random_state,
-            alpha=alpha,
-            beta=beta,
-            include_contemporaneous=False,
-            use_fdr=True,
-        )
+        fdr_result = None
+        if compute_fdr:
+            fdr_result = fit_cgc(
+                data,
+                n_perm=n_perm,
+                n_pasts=n_pasts,
+                n_lags=n_lags,
+                method=method,
+                random_state=random_state,
+                alpha=alpha,
+                beta=beta,
+                include_contemporaneous=False,
+                use_fdr=True,
+            )
     scores = np.asarray(result.lag_only, dtype=float)
     binary = (scores != 0).astype(int)
     np.fill_diagonal(binary, 0)
 
-    binary_fdr = (np.asarray(fdr_result.lag_only) != 0).astype(int)
-    np.fill_diagonal(binary_fdr, 0)
+    binary_fdr = None
+    if fdr_result is not None:
+        binary_fdr = (np.asarray(fdr_result.lag_only) != 0).astype(int)
+        np.fill_diagonal(binary_fdr, 0)
 
     return GraphEstimate(
         estimator=method,

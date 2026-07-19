@@ -116,6 +116,7 @@ class EstimatorConfig:
     beta: float = 0.001
     pcmci_alpha: float = 0.05
     correction: str = "fdr"  # fdr | none
+    cgc_backend: str = "fast"  # fast | normal
     estimator_seed: int = 0
     var_orders: tuple[int, ...] = (1, 2, 3)
     run_pcmci: bool = False

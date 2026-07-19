@@ -18,6 +18,7 @@ from ica_denoising.simulation.config import (
 from ica_denoising.simulation.dataset import build_dataset
 from ica_denoising.simulation.runner import (
     _assert_no_unrequested_bss_variants,
+    _graph_estimate_for_variant,
     _manifest_variant_implementation_current,
     _select_scored_graph,
     import_completed_replicates_from_benchmark,
@@ -326,6 +327,76 @@ def test_fdr_correction_selects_fdr_binary_graph():
     assert correction == "fdr"
     assert scored[0, 1] == 0
     assert scored[1, 0] == 1
+
+
+def test_runner_passes_cgc_backend_to_adapter(tmp_path, monkeypatch):
+    from ica_denoising.simulation import runner
+
+    calls = []
+
+    def _fake_cgc(traces, **kwargs):
+        calls.append(kwargs)
+        n = traces.shape[0]
+        scores = np.zeros((n, n), dtype=float)
+        binary = np.zeros((n, n), dtype=int)
+        return GraphEstimate(
+            estimator="cgc",
+            scores=scores,
+            binary=binary,
+            binary_fdr=None,
+            warnings=(),
+        )
+
+    monkeypatch.setitem(runner.ESTIMATORS, "cgc", _fake_cgc)
+    cfg = SimulationConfig.from_dict(
+        {
+            **_smoke_cfg(tmp_path).to_dict(),
+            "estimator": {
+                **_smoke_cfg(tmp_path).to_dict()["estimator"],
+                "cgc_backend": "normal",
+            },
+        }
+    )
+
+    _graph_estimate_for_variant("cgc", np.ones((3, 30)), cfg)
+
+    assert calls[0]["backend"] == "normal"
+    assert calls[0]["compute_fdr"] is True
+
+
+def test_runner_disables_cgc_fdr_for_uncorrected_graphs(tmp_path, monkeypatch):
+    from ica_denoising.simulation import runner
+
+    calls = []
+
+    def _fake_cgc(traces, **kwargs):
+        calls.append(kwargs)
+        n = traces.shape[0]
+        scores = np.zeros((n, n), dtype=float)
+        binary = np.zeros((n, n), dtype=int)
+        return GraphEstimate(
+            estimator="cgc",
+            scores=scores,
+            binary=binary,
+            binary_fdr=None,
+            warnings=(),
+        )
+
+    monkeypatch.setitem(runner.ESTIMATORS, "cgc", _fake_cgc)
+    base = _smoke_cfg(tmp_path).to_dict()
+    cfg = SimulationConfig.from_dict(
+        {
+            **base,
+            "estimator": {
+                **base["estimator"],
+                "correction": "none",
+            },
+        }
+    )
+
+    _graph_estimate_for_variant("cgc", np.ones((3, 30)), cfg)
+
+    assert calls[0]["compute_fdr"] is False
 
 
 def test_jpcmciplus_adapter_runs_on_small_trace_matrix():

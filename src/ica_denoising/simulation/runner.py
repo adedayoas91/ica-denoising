@@ -116,6 +116,8 @@ def _graph_estimate_for_variant(
             n_perm=est_cfg.n_perm,
             alpha=est_cfg.alpha,
             beta=est_cfg.beta,
+            backend=est_cfg.cgc_backend,
+            compute_fdr=str(est_cfg.correction).lower() == "fdr",
             random_state=est_cfg.estimator_seed,
         )
     if estimator == "var":
