@@ -611,7 +611,9 @@ def write_recording_aggregate(
         ):
             if label not in paths:
                 continue
-            table = pd.read_csv(paths[label])
+            table = _read_recording_aggregate_input(paths[label])
+            if table is None:
+                continue
             for column, value in reversed(metadata.items()):
                 if column in table:
                     table[column] = value
@@ -690,6 +692,13 @@ def write_recording_aggregate(
         paths["fish_primary_effects"], index=False
     )
     return paths
+
+
+def _read_recording_aggregate_input(path: Path) -> pd.DataFrame | None:
+    try:
+        return pd.read_csv(path)
+    except pd.errors.EmptyDataError:
+        return None
 
 
 def _primary_unit_effects(

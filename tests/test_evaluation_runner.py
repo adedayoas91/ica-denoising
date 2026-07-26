@@ -300,6 +300,9 @@ class EvaluationRunnerTests(unittest.TestCase):
                 path = run_dir / filename
                 table.to_csv(path, index=False)
                 paths[label] = path
+            empty_nested = run_dir / "nested_selection.csv"
+            empty_nested.write_text("", encoding="utf-8")
+            paths["nested_selection"] = empty_nested
             spec = DatasetSpec(
                 key="demo/run1",
                 data_name="run1",
@@ -329,6 +332,7 @@ class EvaluationRunnerTests(unittest.TestCase):
             self.assertEqual(aggregate_trace["recording"].iloc[0], "run1")
             self.assertEqual(aggregate_artifact["recording"].iloc[0], "run1")
             self.assertEqual(aggregate_sufficiency["recording"].iloc[0], "run1")
+            self.assertTrue(aggregate_paths["nested_selection"].exists())
 
 
 if __name__ == "__main__":

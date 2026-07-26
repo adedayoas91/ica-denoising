@@ -65,6 +65,22 @@ from ica_denoising.uncertainty import (
 from ica_denoising.variant_id import build_variant_id, cluster_keep_selection
 
 
+NESTED_SELECTION_COLUMNS = [
+    "candidate",
+    "candidate_name",
+    "trace_preservation",
+    "state_change",
+    "artifact_score",
+    "behavior_effect",
+    "n_inner_folds",
+    "selected_candidate",
+    "selected_score",
+    "constraint_status",
+    "tie_break_reason",
+    "selection_scope",
+]
+
+
 @dataclass(frozen=True)
 class StrictFold:
     fold: int
@@ -1200,7 +1216,7 @@ def _nested_selection_report(
     behavior_rows: Sequence[Mapping[str, object]],
 ) -> pd.DataFrame:
     if not config.nested_selection_policies:
-        return pd.DataFrame()
+        return _empty_nested_selection_report()
     policies = tuple(str(policy) for policy in config.nested_selection_policies)
     frames: list[pd.DataFrame] = []
     if "no_selection" in policies:
@@ -1250,7 +1266,15 @@ def _nested_selection_report(
             table["tie_break_reason"] = result.tie_break_reason
             table["selection_scope"] = "outer_train_inner_validation_surrogate"
             frames.append(table)
-    return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+    return (
+        pd.concat(frames, ignore_index=True)
+        if frames
+        else _empty_nested_selection_report()
+    )
+
+
+def _empty_nested_selection_report() -> pd.DataFrame:
+    return pd.DataFrame(columns=NESTED_SELECTION_COLUMNS)
 
 
 def _nested_candidate_table(
