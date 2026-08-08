@@ -5,10 +5,15 @@ from tempfile import TemporaryDirectory
 import unittest
 from unittest.mock import patch
 
+import numpy as np
 import pandas as pd
 
+from ica_denoising.behavior_decoding import BehaviorTargets
 from ica_denoising.bss_notebook import DatasetSpec
+from ica_denoising.causal_behavior_decoding import CausalStateConfig
+from ica_denoising.evaluation_pipeline import EvaluationConfig
 from ica_denoising.evaluation_runner import (
+    _run_evaluation_with_fold_checkpoints,
     behavior_prediction_uncertainty,
     load_evaluation_config,
     write_recording_aggregate,
@@ -16,6 +21,94 @@ from ica_denoising.evaluation_runner import (
 
 
 class EvaluationRunnerTests(unittest.TestCase):
+    def test_fold_checkpoint_resume_reuses_completed_folds(self) -> None:
+        rng = np.random.default_rng(7)
+        frames = 72
+        time = np.arange(frames, dtype=float)
+        traces = np.column_stack(
+            [
+                np.sin(time / 5.0),
+                np.cos(time / 7.0),
+                np.sin(time / 11.0),
+            ]
+        )
+        traces = traces + rng.normal(0.0, 0.02, size=traces.shape)
+        angle = traces[:, 0] + 0.2 * traces[:, 1]
+        vigor = np.abs(np.diff(angle, prepend=angle[0]))
+        targets = BehaviorTargets(
+            angle=angle,
+            vigor=vigor,
+            bout_state=(vigor >= np.quantile(vigor, 0.75)).astype(int),
+            bout_threshold=float(np.quantile(vigor, 0.75)),
+        )
+        config = EvaluationConfig(
+            sample_rate_hz=10.0,
+            n_splits=2,
+            gap=5,
+            bss_methods=(),
+            baseline_ranks=(),
+            lowpass_cutoffs_hz=(),
+            decoder_lags=(0, 1),
+            null_block_size=8,
+            null_seeds=(0,),
+            causal=CausalStateConfig(
+                window=6,
+                target_shifts=(0,),
+                latent_dim=2,
+                gap=5,
+            ),
+            artifact_probe_centers=(),
+        )
+
+        with TemporaryDirectory() as tmp:
+            output_dir = Path(tmp) / "recording"
+            first_events = []
+            first = _run_evaluation_with_fold_checkpoints(
+                "demo/recording",
+                traces,
+                targets,
+                config,
+                tail_angle=None,
+                output_dir=output_dir,
+                checkpoint_root=None,
+                progress_callback=first_events.append,
+            )
+            done_files = sorted(
+                output_dir.glob(".strict_fold_checkpoints/*/fold_*/done.json")
+            )
+            self.assertEqual(len(done_files), 2)
+            self.assertEqual(
+                [event["event"] for event in first_events],
+                ["start", "done", "start", "done", "complete"],
+            )
+
+            second_events = []
+            second = _run_evaluation_with_fold_checkpoints(
+                "demo/recording",
+                traces,
+                targets,
+                config,
+                tail_angle=None,
+                output_dir=output_dir,
+                checkpoint_root=None,
+                progress_callback=second_events.append,
+            )
+
+        self.assertEqual(
+            [event["event"] for event in second_events],
+            ["loaded", "loaded", "complete"],
+        )
+        pd.testing.assert_frame_equal(
+            first.behavior_metrics.reset_index(drop=True),
+            second.behavior_metrics.reset_index(drop=True),
+            check_dtype=False,
+        )
+        pd.testing.assert_frame_equal(
+            first.trace_metrics.reset_index(drop=True),
+            second.trace_metrics.reset_index(drop=True),
+            check_dtype=False,
+        )
+
     def test_example_config_loads_tuple_fields_and_causal_models(self) -> None:
         path = (
             Path(__file__).resolve().parents[1] / "configs" / "evaluation.example.json"
@@ -44,6 +137,8 @@ class EvaluationRunnerTests(unittest.TestCase):
         self.assertIsNone(config.n_components)
         self.assertIsNone(config.bss_pca_components)
         self.assertIsNone(config.bss_pca_variance_threshold)
+        self.assertTrue(config.input_local)
+        self.assertEqual(config.bss_rank_modes, ("full", "ev95"))
 
     def test_behavior_uncertainty_uses_paired_out_of_fold_predictions(self) -> None:
         rows = []
@@ -205,6 +300,9 @@ class EvaluationRunnerTests(unittest.TestCase):
                 path = run_dir / filename
                 table.to_csv(path, index=False)
                 paths[label] = path
+            empty_nested = run_dir / "nested_selection.csv"
+            empty_nested.write_text("", encoding="utf-8")
+            paths["nested_selection"] = empty_nested
             spec = DatasetSpec(
                 key="demo/run1",
                 data_name="run1",
@@ -234,6 +332,7 @@ class EvaluationRunnerTests(unittest.TestCase):
             self.assertEqual(aggregate_trace["recording"].iloc[0], "run1")
             self.assertEqual(aggregate_artifact["recording"].iloc[0], "run1")
             self.assertEqual(aggregate_sufficiency["recording"].iloc[0], "run1")
+            self.assertTrue(aggregate_paths["nested_selection"].exists())
 
 
 if __name__ == "__main__":

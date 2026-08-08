@@ -12,20 +12,26 @@ import numpy as np
 
 
 def _load_gcstar_class() -> type:
-    """Load GcStar from the notebook-friendly causalised module."""
+    """Load GcStar from the hardened, importable causalised module."""
 
-    module_path = Path(__file__).resolve().parents[1] / "core" / "causalised-GC.py"
-    spec = importlib.util.spec_from_file_location(
-        "csl.core.causalised_gc",
-        module_path,
-    )
-    if spec is None or spec.loader is None:
-        raise ImportError(f"Could not load GcStar from {module_path}.")
+    try:
+        from csl.core.causalised_gc import GcStar
 
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[spec.name] = module
-    spec.loader.exec_module(module)
-    return module.GcStar
+        return GcStar
+    except Exception:  # pragma: no cover - fallback for path-only environments
+        module_path = (
+            Path(__file__).resolve().parents[1] / "core" / "causalised_gc.py"
+        )
+        spec = importlib.util.spec_from_file_location(
+            "csl.core._causalised_gc_impl",
+            module_path,
+        )
+        if spec is None or spec.loader is None:
+            raise ImportError(f"Could not load GcStar from {module_path}.")
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[spec.name] = module
+        spec.loader.exec_module(module)
+        return module.GcStar
 
 
 GcStar = _load_gcstar_class()

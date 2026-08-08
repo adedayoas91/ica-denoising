@@ -291,8 +291,15 @@ class EvaluationPipelineTests(unittest.TestCase):
         self.assertFalse(result.causal_sufficiency.empty)
         self.assertIn("rmse_delta_aug_minus_base", result.causal_sufficiency.columns)
         self.assertIn("target_variant", result.behavior_metrics.columns)
+        self.assertIn("test_variant_id", result.behavior_metrics.columns)
+        self.assertIn("variant_id", result.trace_metrics.columns)
+        self.assertIn("variant_id", result.causal_metrics.columns)
         self.assertIn("null_strategy", result.behavior_metrics.columns)
         self.assertIn("spectral_power_retention", result.trace_metrics.columns)
+        self.assertFalse(result.nested_selection.empty)
+        self.assertFalse(result.trace_uncertainty.empty)
+        self.assertFalse(result.causal_uncertainty.empty)
+        self.assertFalse(result.causal_sufficiency_uncertainty.empty)
         raw_trace_metrics = result.trace_metrics[
             result.trace_metrics["variant"] == "raw"
         ]
@@ -391,7 +398,34 @@ class EvaluationPipelineTests(unittest.TestCase):
 
         self.assertFalse(result.artifact_probe_metrics.empty)
         self.assertIn("artifact_center", result.artifact_probe_metrics.columns)
+        self.assertIn("variant_id", result.artifact_probe_metrics.columns)
         self.assertIn(50, set(result.artifact_probe_metrics["artifact_center"]))
+
+    def test_input_local_evaluation_imputes_fold_local_raw_traces(self) -> None:
+        traces = self.traces.copy()
+        traces[5, 0] = np.nan
+        traces[120, 2] = np.inf
+        tail_angle = np.repeat(self.targets.angle, 2)
+        config = EvaluationConfig(
+            sample_rate_hz=10.0,
+            n_splits=2,
+            gap=5,
+            bss_methods=(),
+            baseline_ranks=(),
+            lowpass_cutoffs_hz=(),
+            decoder_lags=(0, 1),
+            null_seeds=(0,),
+            input_local=True,
+            causal=CausalStateConfig(window=6, target_shifts=(0,), latent_dim=2, gap=5),
+        )
+
+        result = run_evaluation(traces, self.targets, config, tail_angle=tail_angle)
+
+        self.assertIn("input_local", set(result.behavior_metrics["target_variant"]))
+        operations = set(result.leakage_audit["operation"])
+        self.assertIn("per_neuron_imputer", operations)
+        self.assertIn("bout_threshold", operations)
+        self.assertTrue(result.leakage_audit["leakage_free"].all())
 
 
 if __name__ == "__main__":

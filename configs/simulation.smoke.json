@@ -1,0 +1,56 @@
+{
+  "benchmark_version": "smoke",
+  "schema_version": "1",
+  "seeds": [0, 1],
+  "sample_rate_hz": 5.0,
+  "n_frames": 600,
+  "graph": {
+    "family": "sparse_random",
+    "n_observed": 6,
+    "edge_density": 0.25,
+    "lag_order": 2,
+    "spectral_radius": 0.9
+  },
+  "behavior": {
+    "n_parents": 2,
+    "behavior_lag": 1,
+    "bout_quantile": 0.7,
+    "smooth_window": 3
+  },
+  "bss": {
+    "methods": ["fastica", "pca"],
+    "ranks": ["full"],
+    "random_states": [0],
+    "keep_top": 4
+  },
+  "estimator": {
+    "estimators": ["cgc", "var"],
+    "n_pasts": 2,
+    "n_lags": 2,
+    "n_perm": 20,
+    "alpha": 0.05,
+    "beta": 0.05,
+    "correction": "fdr",
+    "var_orders": [1, 2],
+    "run_pcmci": false
+  },
+  "run": {
+    "output_dir": "outputs/simulation",
+    "resume": true,
+    "workers": 1
+  },
+  "scenarios": [
+    {
+      "scenario_id": "S0",
+      "dynamics": {"model": "linear_var", "burn_in": 100},
+      "calcium": {"enabled": false},
+      "artifacts": {"types": []}
+    },
+    {
+      "scenario_id": "S2",
+      "dynamics": {"model": "linear_var", "burn_in": 100},
+      "calcium": {"enabled": true, "decay_seconds": 1.0},
+      "artifacts": {"types": ["drift", "neuropil"], "artifact_to_signal": 0.5}
+    }
+  ]
+}

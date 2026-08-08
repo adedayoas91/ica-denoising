@@ -245,3 +245,159 @@ def summarize_gcstar_branch(
         return payload
 
     return compute_graph_stability_metrics(adjacencies)
+
+
+# ---------------------------------------------------------------------------
+# Directed graph-recovery metrics (Section 5.1)
+# ---------------------------------------------------------------------------
+def _offdiag_mask(n: int) -> np.ndarray:
+    """Boolean mask selecting off-diagonal entries of an ``(n, n)`` matrix."""
+
+    mask = ~np.eye(n, dtype=bool)
+    return mask
+
+
+def confusion_counts(predicted: np.ndarray, truth: np.ndarray) -> dict[str, int]:
+    """Return TP/FP/TN/FN for binary directed graphs (diagonal excluded)."""
+
+    n = truth.shape[0]
+    mask = _offdiag_mask(n)
+    pred = (zero_diagonal(predicted) != 0)[mask]
+    true = (zero_diagonal(truth) != 0)[mask]
+    tp = int(np.logical_and(pred, true).sum())
+    fp = int(np.logical_and(pred, ~true).sum())
+    tn = int(np.logical_and(~pred, ~true).sum())
+    fn = int(np.logical_and(~pred, true).sum())
+    return {"tp": tp, "fp": fp, "tn": tn, "fn": fn}
+
+
+def structural_hamming_distance(predicted: np.ndarray, truth: np.ndarray) -> int:
+    """Number of differing directed off-diagonal edges."""
+
+    n = truth.shape[0]
+    mask = _offdiag_mask(n)
+    pred = (zero_diagonal(predicted) != 0)[mask]
+    true = (zero_diagonal(truth) != 0)[mask]
+    return int(np.sum(pred != true))
+
+
+def edge_density_bias(predicted: np.ndarray, truth: np.ndarray) -> float:
+    """Predicted minus true off-diagonal edge density."""
+
+    n = truth.shape[0]
+    denom = n * (n - 1)
+    if denom == 0:
+        return 0.0
+    pred = int((zero_diagonal(predicted) != 0).sum())
+    true = int((zero_diagonal(truth) != 0).sum())
+    return float((pred - true) / denom)
+
+
+def direction_reversal_count(predicted: np.ndarray, truth: np.ndarray) -> int:
+    """Edges present in the wrong direction (``t->s`` predicted, ``s->t`` true)."""
+
+    pred = (zero_diagonal(predicted) != 0).astype(int)
+    true = (zero_diagonal(truth) != 0).astype(int)
+    reversed_edges = np.logical_and(
+        np.logical_and(true == 1, pred == 0),
+        pred.T == 1,
+    )
+    return int(reversed_edges.sum())
+
+
+def jaccard_overlap(a: np.ndarray, b: np.ndarray) -> float:
+    """Jaccard overlap of edge sets of two directed graphs (diagonal excluded)."""
+
+    ea = zero_diagonal(a) != 0
+    eb = zero_diagonal(b) != 0
+    union = int(np.logical_or(ea, eb).sum())
+    if union == 0:
+        return 1.0
+    inter = int(np.logical_and(ea, eb).sum())
+    return float(inter / union)
+
+
+def matthews_corrcoef(predicted: np.ndarray, truth: np.ndarray) -> float:
+    """Matthews correlation coefficient for binary directed graphs."""
+
+    counts = confusion_counts(predicted, truth)
+    tp, fp, tn, fn = counts["tp"], counts["fp"], counts["tn"], counts["fn"]
+    numerator = tp * tn - fp * fn
+    denominator = np.sqrt(
+        float((tp + fp) * (tp + fn) * (tn + fp) * (tn + fn))
+    )
+    if denominator == 0:
+        return 0.0
+    return float(numerator / denominator)
+
+
+def score_auroc_ap(scores: np.ndarray, truth: np.ndarray) -> dict[str, float]:
+    """Weighted-score AUROC and average precision (diagonal excluded)."""
+
+    n = truth.shape[0]
+    mask = _offdiag_mask(n)
+    y = (zero_diagonal(truth) != 0)[mask].astype(int)
+    s = np.abs(zero_diagonal(scores))[mask].astype(float)
+    out = {"auroc": float("nan"), "average_precision": float("nan")}
+    if y.sum() == 0 or y.sum() == y.size:
+        return out
+    try:
+        from sklearn.metrics import average_precision_score, roc_auc_score
+
+        out["auroc"] = float(roc_auc_score(y, s))
+        out["average_precision"] = float(average_precision_score(y, s))
+    except Exception:  # pragma: no cover - sklearn always present here
+        pass
+    return out
+
+
+def graph_recovery_metrics(
+    predicted: np.ndarray,
+    truth: np.ndarray,
+    *,
+    scores: np.ndarray | None = None,
+    reference: np.ndarray | None = None,
+) -> dict[str, float]:
+    """Full directed graph-recovery metric bundle (Section 5.1).
+
+    Args:
+        predicted: Predicted (weighted or binary) adjacency ``[source, target]``.
+        truth: Ground-truth binary adjacency ``[source, target]``.
+        scores: Optional continuous edge scores for AUROC/AP.
+        reference: Optional reference graph (e.g. clean-oracle estimate) for
+            Jaccard overlap.
+
+    Returns:
+        Dictionary of directed precision, recall, F1, specificity, FPR, MCC,
+        SHD, edge-density bias, direction-reversal count, and optional
+        score-based and reference-overlap metrics. Diagonal entries excluded.
+    """
+
+    counts = confusion_counts(predicted, truth)
+    tp, fp, tn, fn = counts["tp"], counts["fp"], counts["tn"], counts["fn"]
+    precision = tp / (tp + fp) if (tp + fp) else 0.0
+    recall = tp / (tp + fn) if (tp + fn) else 0.0
+    specificity = tn / (tn + fp) if (tn + fp) else 0.0
+    fpr = fp / (fp + tn) if (fp + tn) else 0.0
+    f1 = 2 * precision * recall / (precision + recall) if (precision + recall) else 0.0
+
+    metrics: dict[str, float] = {
+        "precision": float(precision),
+        "recall": float(recall),
+        "f1": float(f1),
+        "specificity": float(specificity),
+        "fpr": float(fpr),
+        "mcc": matthews_corrcoef(predicted, truth),
+        "shd": float(structural_hamming_distance(predicted, truth)),
+        "edge_density_bias": edge_density_bias(predicted, truth),
+        "direction_reversals": float(direction_reversal_count(predicted, truth)),
+        "tp": float(tp),
+        "fp": float(fp),
+        "tn": float(tn),
+        "fn": float(fn),
+    }
+    if scores is not None:
+        metrics.update(score_auroc_ap(scores, truth))
+    if reference is not None:
+        metrics["jaccard_vs_reference"] = jaccard_overlap(predicted, reference)
+    return metrics
